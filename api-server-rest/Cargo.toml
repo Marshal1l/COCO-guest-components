@@ -1,0 +1,21 @@
+[package]
+name = "api-server-rest"
+version = "0.1.0"
+authors = ["The Confidential Container Authors"]
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+clap = { workspace = true, features = ["derive"] }
+form_urlencoded = "1.2.0"
+hyper = { version = "0.14.27", features = ["server", "http1", "runtime"] }
+protobuf = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+ttrpc = { workspace = true, features = ["async"] }
+
+[build-dependencies]
+serde_json = { workspace = true }
+ttrpc-codegen = { workspace = true }
+utoipa = "5"

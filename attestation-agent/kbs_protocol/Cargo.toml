@@ -1,0 +1,68 @@
+[package]
+name = "kbs_protocol"
+version = "0.1.0"
+authors = ["The Attestation Agent Authors"]
+publish = false
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+attester = { path = "../attester", default-features = false }
+base64.workspace = true
+clap = { workspace = true, features = ["derive"], optional = true }
+crypto = { path = "../deps/crypto", default-features = false }
+env_logger = { workspace = true, optional = true }
+jwt-simple.workspace = true
+kbs-types.workspace = true
+log.workspace = true
+protobuf = { workspace = true, optional = true }
+reqwest = { workspace = true, features = ["cookies", "json"], optional = true }
+resource_uri.path = "../deps/resource_uri"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+ttrpc = { workspace = true, optional = true }
+url.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+serial_test.workspace = true
+tempfile.workspace = true
+testcontainers.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "fs", "process"] }
+
+[build-dependencies]
+ttrpc-codegen = { workspace = true, optional = true }
+
+[[bin]]
+name = "trustee-attester"
+required-features = ["bin"]
+
+[features]
+default = ["background_check", "passport", "rust-crypto", "all-attesters"]
+
+passport = []
+# Allow to connect Attestation-Agent with TTRPC to get evidence, token, etc.
+aa_ttrpc = ["ttrpc-codegen", "passport", "ttrpc/async", "protobuf"]
+
+background_check = ["tokio/time"]
+all-attesters = ["attester/all-attesters"]
+tdx-attester = ["attester/tdx-attester"]
+tdx-attester-libtdx = ["attester/tdx-attester", "attester/tdx-attest-dcap-ioctls"]
+sgx-attester = ["attester/sgx-attester"]
+az-snp-vtpm-attester = ["attester/az-snp-vtpm-attester"]
+az-tdx-vtpm-attester = ["attester/az-tdx-vtpm-attester"]
+snp-attester = ["attester/snp-attester"]
+csv-attester = ["attester/csv-attester"]
+cca-attester = ["attester/cca-attester"]
+se-attester = ["attester/se-attester"]
+
+rust-crypto = ["reqwest/rustls-tls", "crypto/rust-crypto"]
+openssl = ["reqwest/native-tls-vendored", "crypto/openssl"]
+
+bin = ["tokio/rt", "tokio/macros", "clap", "env_logger"]
