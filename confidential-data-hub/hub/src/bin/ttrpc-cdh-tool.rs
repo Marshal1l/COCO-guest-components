@@ -122,6 +122,7 @@ impl ImagePullService {
             timeout_image_pull,
         }
     }
+    //TODO pull image and decrypt+upack(dont prepare bundle))
     async fn pull_image(&self, image_path: &str, bundle_path: &str) -> Result<String> {
         let req = ImagePullRequest {
             image_url: image_path.to_string(),
