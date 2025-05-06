@@ -223,7 +223,7 @@ async fn main() {
                 .pull_image(&arg.image_url, &arg.bundle_path)
                 .await
                 .expect("pull image");
-            println!("image pull success{}", res);
+            println!("image pull success:{}", res);
         }
     }
     //TODO: start a server and wait for guest cvm to do image_pull and memory map//

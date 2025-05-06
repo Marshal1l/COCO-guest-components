@@ -3086,22 +3086,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "image-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap 4.2.7",
- "form_urlencoded",
- "hyper 0.14.32",
- "protobuf 3.7.1",
- "serde_json",
- "tokio",
- "ttrpc",
- "ttrpc-codegen",
-]
-
-[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
