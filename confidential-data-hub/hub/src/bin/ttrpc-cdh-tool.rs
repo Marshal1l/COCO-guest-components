@@ -60,6 +60,8 @@ enum Operation {
 
     /// Pull image
     PullImage(PullImageArgs),
+    ///Pull content
+    PullContent(PullContentArgs),
 }
 
 #[derive(Args)]
@@ -105,6 +107,18 @@ struct PullImageArgs {
     #[arg(short, long)]
     bundle_path: String,
 }
+
+#[derive(Args)]
+#[command(author, version, about, long_about = None)]
+struct PullContentArgs {
+    /// Reference of the image
+    #[arg(short, long)]
+    image_url: String,
+
+    /// Path to store the image bundle
+    #[arg(short, long)]
+    content_path: String,
+}
 pub struct ImagePullService {
     client_image_pull: ImagePullServiceClient,
     client_unwrap_key: KeyProviderServiceClient,
@@ -121,6 +135,20 @@ impl ImagePullService {
             client_unwrap_key,
             timeout_image_pull,
         }
+    }
+    async fn pull_content(&self, image_path: &str, content_path: &str) -> Result<String> {
+        let req = ContentPullRequest {
+            image_url: image_path.to_string(),
+            content_path: content_path.to_string(),
+            ..Default::default()
+        };
+        print!("seding pull image request to CDH: {:?}\n", req);
+        let res = self
+            .client_image_pull
+            .pull_content(ttrpc::context::with_timeout(self.timeout_image_pull), &req)
+            .await?;
+        println!("CDH pull content response: {:?}\n", res.manifest_digest);
+        Ok(res.manifest_digest)
     }
     //TODO pull image and decrypt+upack(dont prepare bundle))
     async fn pull_image(&self, image_path: &str, bundle_path: &str) -> Result<String> {
@@ -224,6 +252,13 @@ async fn main() {
                 .await
                 .expect("pull image");
             println!("image pull success:{}", res);
+        }
+        Operation::PullContent(arg) => {
+            let res = image_pull_service
+                .pull_content(&arg.image_url, &arg.content_path)
+                .await
+                .expect("pull content");
+            println!("content pull success:{}", res);
         }
     }
     //TODO: start a server and wait for guest cvm to do image_pull and memory map//

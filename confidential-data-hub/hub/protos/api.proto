@@ -37,10 +37,18 @@ message ImagePullRequest {
     string image_url = 1;
     string bundle_path = 2;
 }
-
 message ImagePullResponse {
     string manifest_digest = 1;
 }
+
+message ContentPullRequest {
+    string image_url = 1;
+    string content_path = 2;
+}
+message ContentPullResponse {
+    string manifest_digest = 1;
+}
+
 
 service SealedSecretService {
     rpc UnsealSecret(UnsealSecretInput) returns (UnsealSecretOutput) {};
@@ -56,4 +64,5 @@ service SecureMountService {
 
 service ImagePullService {
     rpc PullImage(ImagePullRequest) returns (ImagePullResponse) {};
+    rpc PullContent(ContentPullRequest) returns (ContentPullResponse) {};
 }

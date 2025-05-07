@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use anyhow::Ok;
 use anyhow::{bail, Context, Result};
 use log::error;
 use log::info;
@@ -9,7 +10,7 @@ use oci_client::manifest::{OciDescriptor, OciImageManifest};
 use oci_client::secrets::RegistryAuth;
 use oci_client::Reference;
 use oci_spec::image::{ImageConfiguration, Os};
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -163,7 +164,231 @@ impl ImageClient {
             layer_store,
         }
     }
+    pub async fn display_image_meta(&self) {
+        info!("display_image_meta-----------\n");
+        let m = self.meta_store.read().await;
+        info!("ImageMetaStore: {:#?}", m.image_db);
+        info!("LayersStore: {:#?}", m.layer_db);
+    }
 
+    // guest-fn:call image-cvm pull image and map the decrypt and uncompressed image to guest-cvm on /tmp/redis/
+    //
+    pub async fn map_image(&mut self) {}
+    // guest-fn:create bundle from the image in map mem.
+    // map_dir must be /tmp/redis/
+    //                           /meta_store.json
+    //                           /layers
+    // meta_store just have dest image's ImageMeta
+    // -->
+    // image_db.layer_metas should be modified->store_path must be /tmp/redis/layers/num
+    // layer_db should be modified->store_path must be /tmp/redis/layers/num
+    //
+    pub async fn create_map_bundle(
+        &mut self,
+        bundle_dir: &Path,
+        map_dir: &Path,
+        image_id: String,
+    ) -> Result<String> {
+        let snapshot = match self.snapshots.get_mut(&self.config.default_snapshot) {
+            Some(s) => s,
+            _ => {
+                bail!(
+                    "default snapshot {} not found",
+                    &self.config.default_snapshot
+                );
+            }
+        };
+        //get image_db from map_dir/meta_store.json
+        let meta_store = Arc::new(RwLock::new(
+            MetaStore::try_from(map_dir.join(METAFILE).as_path()).unwrap_or_default(),
+        ));
+
+        let m = meta_store.read().await;
+        //image_db only have dest ImageMeta,so don't need id to get image_data
+        if let Some(image_data) = &m.image_db.get(&image_id) {
+            return create_bundle(image_data, bundle_dir, snapshot);
+        }
+        return Ok(("error create_map_bundle").to_string());
+    }
+    //image-fn:
+    //pull_image_content:pull image, signature validate,decrypt and uncompress
+    //if already have dest's meta.json,
+    //  directly return image_id
+    //else
+    //  pull image, signature validate,decrypt and uncompress
+    //  return image_id
+    pub async fn pull_image_content(
+        &mut self,
+        image_url: &str,
+        _content_dir: &Path,
+        auth_info: &Option<&str>,
+        decrypt_config: &Option<&str>,
+    ) -> Result<String> {
+        info!("pull content start------------------\n");
+        {
+            info!("display_image_meta-----------\n");
+            let m = self.meta_store.read().await;
+            info!("ImageMetaStore: {:#?}", m.image_db);
+            info!("LayersStore: {:#?}", m.layer_db);
+        }
+        let reference = Reference::try_from(image_url)?;
+        // Try to find a valid registry auth. Logic order
+        // 1. the input parameter
+        // 2. from self.registry_auth
+        // 3. use Anonymous auth
+        let auth = match auth_info {
+            Some(input_auth) => match input_auth.split_once(':') {
+                Some((username, password)) => {
+                    RegistryAuth::Basic(username.to_string(), password.to_string())
+                }
+                None => bail!("Invalid authentication info ({:?})", auth_info),
+            },
+            None => match &self.registry_auth {
+                Some(registry_auth) => registry_auth.credential_for_reference(&reference).await?,
+                None => {
+                    info!("Use Anonymous image registry auth");
+                    RegistryAuth::Anonymous
+                }
+            },
+        };
+        let mut client = PullClient::new(
+            reference,
+            self.layer_store.clone(),
+            &auth,
+            self.config.max_concurrent_layer_downloads_per_image,
+            self.config.skip_proxy_ips.as_deref(),
+            self.config.image_pull_proxy.as_deref(),
+            self.config.extra_root_certificates.clone(),
+        )?;
+        let (image_manifest, image_digest, image_config) = client.pull_manifest().await?;
+        info!("Image manifest: {:?}\n", image_manifest);
+        let id = image_manifest.config.digest.clone();
+
+        // If image has already been populated
+        // image_mata record this image
+        {
+            let m = self.meta_store.read().await;
+            if let Some(image_data) = &m.image_db.get(&id) {
+                info!("[pull_image_content]:Image content are already pulled");
+                return Ok(image_data.id.clone());
+            }
+        }
+        #[cfg(feature = "signature")]
+        if let Some(signature_validator) = &self.signature_validator {
+            signature_validator
+                .check_image_signature(image_url, &image_digest, &auth)
+                .await
+                .context("image security validation failed")?;
+        }
+
+        let (mut image_data, unique_layers, unique_diff_ids) = create_image_meta(
+            &id,
+            image_url,
+            &image_manifest,
+            &image_digest,
+            &image_config,
+        )?;
+        info!("create_image_meta!\n");
+        let unique_layers_len = unique_layers.len();
+        info!("unique_layers_len:{}", unique_layers_len);
+        let layer_metas = client
+            .async_pull_layers(
+                unique_layers,
+                &unique_diff_ids,
+                decrypt_config,
+                self.meta_store.clone(),
+            )
+            .await?;
+        info!("async_pull_layers!\n");
+        image_data.layer_metas = layer_metas;
+        let layer_db: HashMap<String, LayerMeta> = image_data
+            .layer_metas
+            .iter()
+            .map(|layer| (layer.compressed_digest.clone(), layer.clone()))
+            .collect();
+        info!("write update to layer meta_store");
+        self.meta_store.write().await.layer_db.extend(layer_db);
+        if unique_layers_len != image_data.layer_metas.len() {
+            bail!(
+                " {} layers failed to pull",
+                unique_layers_len - image_data.layer_metas.len()
+            );
+        }
+        info!("finish write the layer meta_store");
+        info!("write update to image meta_store");
+        self.meta_store
+            .write()
+            .await
+            .image_db
+            .insert(image_data.id.clone(), image_data.clone());
+
+        let meta_file = self
+            .config
+            .work_dir
+            .join(METAFILE)
+            .to_string_lossy()
+            .to_string();
+        self.meta_store
+            .write()
+            .await
+            .write_to_file(&meta_file)
+            .context("update meta store failed")?;
+        info!("finish write the image meta_store");
+        info!("[pull_image_content]:pull image content successfully");
+        return Ok(image_data.id.clone());
+    }
+    //image-fn:
+    //  1.pull_image_content:pull image, signature validate,decrypt and uncompress
+    //  2.create dest meta.json
+    //  3.mem map {meta.json,layers} to guest cvm
+    //  return image_id
+    pub async fn pull_content(
+        &mut self,
+        image_url: &str,
+        content_dir: &Path,
+        auth_info: &Option<&str>,
+        decrypt_config: &Option<&str>,
+    ) -> Result<String> {
+        let image_id = self
+            .pull_image_content(image_url, content_dir, auth_info, decrypt_config)
+            .await;
+        //create dest meta.json
+        //get image_id
+        match image_id {
+            std::result::Result::Ok(result) => {
+                info!("[pull content]:image_id={}", result);
+                //use image_id find image meta from meta_store.json
+                self.create_dest_meta(result).await;
+                //load dest meta.json and dest image's layers to mem
+                self.load_content();
+            }
+            std::result::Result::Err(err) => {
+                info!("[pull content]:get image_id error={}", err);
+            }
+        }
+
+        //do mem map
+        return Ok("TODO".to_string());
+    }
+    pub async fn create_dest_meta(&self, image_id: String) {
+        info!("[create_dest_meta]:for image={}", image_id);
+        //build dest_image_meta
+        let m = self.meta_store.read().await;
+        let dest_image_meta = m.image_db.get(&image_id);
+        //set the dest_meta_dir
+        let map_meta = "map-meta".to_string();
+        let dest_meta_dir = Path::new(&self.config.work_dir);
+        info!(
+            "[create_dest_meta]:dest_meta_dir={}",
+            dest_meta_dir.display()
+        );
+        //info!("[create_dest_meta]:dest image meata={:#?}", dest_image_meta);
+        //save the dest_meta on disk
+    }
+    // load the dest_meta and image layers to mem
+    pub async fn load_content(&self) {
+        info!("[load_content]:load content to mem");
+    }
     /// pull_image pulls an image with optional auth info and decrypt config
     /// and store the pulled data under user defined work_dir/layers.
     /// It will return the image ID with prepeared bundle: a rootfs directory,

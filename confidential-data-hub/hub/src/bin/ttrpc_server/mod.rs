@@ -19,8 +19,9 @@ use crate::{
     message::{KeyProviderInput, KeyUnwrapOutput, KeyUnwrapResults},
     protos::{
         api::{
-            GetResourceRequest, GetResourceResponse, ImagePullRequest, ImagePullResponse,
-            SecureMountRequest, SecureMountResponse, UnsealSecretInput, UnsealSecretOutput,
+            ContentPullRequest, ContentPullResponse, GetResourceRequest, GetResourceResponse,
+            ImagePullRequest, ImagePullResponse, SecureMountRequest, SecureMountResponse,
+            UnsealSecretInput, UnsealSecretOutput,
         },
         api_ttrpc::{
             GetResourceService, ImagePullService, SealedSecretService, SecureMountService,
@@ -202,6 +203,30 @@ impl ImagePullService for Server {
         let mut reply = ImagePullResponse::new();
         reply.manifest_digest = manifest_digest;
         debug!("[ttRPC CDH] pull image succeeded.");
+        Ok(reply)
+    }
+    async fn pull_content(
+        &self,
+        _ctx: &TtrpcContext,
+        req: ContentPullRequest,
+    ) -> ::ttrpc::Result<ContentPullResponse> {
+        debug!("[ttRPC CDH] get new content pull request");
+        let manifest_digest = self
+            .hub
+            .pull_content(&req.image_url, &req.content_path)
+            .await
+            .map_err(|e| {
+                let detailed_error = format_error!(e);
+                error!("[ttRPC CDH] Pull Image :\n{detailed_error}");
+                let mut status = Status::new();
+                status.set_code(Code::INTERNAL);
+                status.set_message("[CDH] [ERROR]: pull image failed".to_string());
+                Error::RpcStatus(status)
+            })?;
+
+        let mut reply = ContentPullResponse::new();
+        reply.manifest_digest = manifest_digest;
+        debug!("[ttRPC CDH] pull content succeeded.");
         Ok(reply)
     }
 }

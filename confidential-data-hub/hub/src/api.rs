@@ -32,4 +32,6 @@ pub trait DataHub {
 
     /// Pull image of image url (reference), and place the merged layers in the `bundle_path/rootfs`
     async fn pull_image(&self, _image_url: &str, _bundle_path: &str) -> Result<String>;
+
+    async fn pull_content(&self, image_url: &str, content_path: &str) -> Result<String>;
 }

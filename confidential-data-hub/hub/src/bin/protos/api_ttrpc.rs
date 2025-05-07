@@ -179,6 +179,11 @@ impl ImagePullServiceClient {
         let mut cres = super::api::ImagePullResponse::new();
         ::ttrpc::async_client_request!(self, ctx, req, "api.ImagePullService", "PullImage", cres);
     }
+
+    pub async fn pull_content(&self, ctx: ttrpc::context::Context, req: &super::api::ContentPullRequest) -> ::ttrpc::Result<super::api::ContentPullResponse> {
+        let mut cres = super::api::ContentPullResponse::new();
+        ::ttrpc::async_client_request!(self, ctx, req, "api.ImagePullService", "PullContent", cres);
+    }
 }
 
 struct PullImageMethod {
@@ -192,10 +197,24 @@ impl ::ttrpc::r#async::MethodHandler for PullImageMethod {
     }
 }
 
+struct PullContentMethod {
+    service: Arc<dyn ImagePullService + Send + Sync>,
+}
+
+#[async_trait]
+impl ::ttrpc::r#async::MethodHandler for PullContentMethod {
+    async fn handler(&self, ctx: ::ttrpc::r#async::TtrpcContext, req: ::ttrpc::Request) -> ::ttrpc::Result<::ttrpc::Response> {
+        ::ttrpc::async_request_handler!(self, ctx, req, api, ContentPullRequest, pull_content);
+    }
+}
+
 #[async_trait]
 pub trait ImagePullService: Sync {
     async fn pull_image(&self, _ctx: &::ttrpc::r#async::TtrpcContext, _: super::api::ImagePullRequest) -> ::ttrpc::Result<super::api::ImagePullResponse> {
         Err(::ttrpc::Error::RpcStatus(::ttrpc::get_status(::ttrpc::Code::NOT_FOUND, "/api.ImagePullService/PullImage is not supported".to_string())))
+    }
+    async fn pull_content(&self, _ctx: &::ttrpc::r#async::TtrpcContext, _: super::api::ContentPullRequest) -> ::ttrpc::Result<super::api::ContentPullResponse> {
+        Err(::ttrpc::Error::RpcStatus(::ttrpc::get_status(::ttrpc::Code::NOT_FOUND, "/api.ImagePullService/PullContent is not supported".to_string())))
     }
 }
 
@@ -206,6 +225,9 @@ pub fn create_image_pull_service(service: Arc<dyn ImagePullService + Send + Sync
 
     methods.insert("PullImage".to_string(),
                     Box::new(PullImageMethod{service: service.clone()}) as Box<dyn ::ttrpc::r#async::MethodHandler + Send + Sync>);
+
+    methods.insert("PullContent".to_string(),
+                    Box::new(PullContentMethod{service: service.clone()}) as Box<dyn ::ttrpc::r#async::MethodHandler + Send + Sync>);
 
     ret.insert("api.ImagePullService".to_string(), ::ttrpc::r#async::Service{ methods, streams });
     ret
