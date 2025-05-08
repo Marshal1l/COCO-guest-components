@@ -180,6 +180,11 @@ impl ImagePullServiceClient {
         ::ttrpc::async_client_request!(self, ctx, req, "api.ImagePullService", "PullImage", cres);
     }
 
+    pub async fn guest_pull_image(&self, ctx: ttrpc::context::Context, req: &super::api::GuestImagePullRequest) -> ::ttrpc::Result<super::api::GuestImagePullResponse> {
+        let mut cres = super::api::GuestImagePullResponse::new();
+        ::ttrpc::async_client_request!(self, ctx, req, "api.ImagePullService", "GuestPullImage", cres);
+    }
+
     pub async fn pull_content(&self, ctx: ttrpc::context::Context, req: &super::api::ContentPullRequest) -> ::ttrpc::Result<super::api::ContentPullResponse> {
         let mut cres = super::api::ContentPullResponse::new();
         ::ttrpc::async_client_request!(self, ctx, req, "api.ImagePullService", "PullContent", cres);
@@ -194,6 +199,17 @@ struct PullImageMethod {
 impl ::ttrpc::r#async::MethodHandler for PullImageMethod {
     async fn handler(&self, ctx: ::ttrpc::r#async::TtrpcContext, req: ::ttrpc::Request) -> ::ttrpc::Result<::ttrpc::Response> {
         ::ttrpc::async_request_handler!(self, ctx, req, api, ImagePullRequest, pull_image);
+    }
+}
+
+struct GuestPullImageMethod {
+    service: Arc<dyn ImagePullService + Send + Sync>,
+}
+
+#[async_trait]
+impl ::ttrpc::r#async::MethodHandler for GuestPullImageMethod {
+    async fn handler(&self, ctx: ::ttrpc::r#async::TtrpcContext, req: ::ttrpc::Request) -> ::ttrpc::Result<::ttrpc::Response> {
+        ::ttrpc::async_request_handler!(self, ctx, req, api, GuestImagePullRequest, guest_pull_image);
     }
 }
 
@@ -213,6 +229,9 @@ pub trait ImagePullService: Sync {
     async fn pull_image(&self, _ctx: &::ttrpc::r#async::TtrpcContext, _: super::api::ImagePullRequest) -> ::ttrpc::Result<super::api::ImagePullResponse> {
         Err(::ttrpc::Error::RpcStatus(::ttrpc::get_status(::ttrpc::Code::NOT_FOUND, "/api.ImagePullService/PullImage is not supported".to_string())))
     }
+    async fn guest_pull_image(&self, _ctx: &::ttrpc::r#async::TtrpcContext, _: super::api::GuestImagePullRequest) -> ::ttrpc::Result<super::api::GuestImagePullResponse> {
+        Err(::ttrpc::Error::RpcStatus(::ttrpc::get_status(::ttrpc::Code::NOT_FOUND, "/api.ImagePullService/GuestPullImage is not supported".to_string())))
+    }
     async fn pull_content(&self, _ctx: &::ttrpc::r#async::TtrpcContext, _: super::api::ContentPullRequest) -> ::ttrpc::Result<super::api::ContentPullResponse> {
         Err(::ttrpc::Error::RpcStatus(::ttrpc::get_status(::ttrpc::Code::NOT_FOUND, "/api.ImagePullService/PullContent is not supported".to_string())))
     }
@@ -225,6 +244,9 @@ pub fn create_image_pull_service(service: Arc<dyn ImagePullService + Send + Sync
 
     methods.insert("PullImage".to_string(),
                     Box::new(PullImageMethod{service: service.clone()}) as Box<dyn ::ttrpc::r#async::MethodHandler + Send + Sync>);
+
+    methods.insert("GuestPullImage".to_string(),
+                    Box::new(GuestPullImageMethod{service: service.clone()}) as Box<dyn ::ttrpc::r#async::MethodHandler + Send + Sync>);
 
     methods.insert("PullContent".to_string(),
                     Box::new(PullContentMethod{service: service.clone()}) as Box<dyn ::ttrpc::r#async::MethodHandler + Send + Sync>);

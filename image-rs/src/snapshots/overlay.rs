@@ -2,15 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::snapshots::{MountPoint, SnapshotType, Snapshotter};
 use anyhow::{anyhow, Result};
+use log::info;
 use nix::mount::MsFlags;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-
-use crate::snapshots::{MountPoint, SnapshotType, Snapshotter};
 
 #[derive(Debug)]
 pub struct OverlayFs {
@@ -49,6 +49,7 @@ impl Snapshotter for OverlayFs {
             hasher.update(time_seed);
             hex::encode(hasher.finalize())
         };
+
         let work_dir = self.data_dir.join(mount_index);
         let overlay_upperdir = work_dir.join("upperdir");
         let overlay_workdir = work_dir.join("workdir");
@@ -66,6 +67,12 @@ impl Snapshotter for OverlayFs {
 
         let source = Path::new(&fs_type);
         let flags = MsFlags::empty();
+        //
+        info!("overlay_lowerdir:{}", &overlay_lowerdir);
+        info!("overlay_upperdir:{}", &overlay_upperdir.display());
+        info!("overlay_workdir:{}", &overlay_workdir.display());
+        info!("mount_path:{}", &mount_path.display());
+
         let options = format!(
             "lowerdir={},upperdir={},workdir={}",
             overlay_lowerdir,

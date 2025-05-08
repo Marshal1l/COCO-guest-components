@@ -78,7 +78,21 @@ impl DataHub for Hub {
         let res = storage.mount().await?;
         Ok(res)
     }
-
+    async fn guest_pull_image(&self, image_url: &str, bundle_path: &str) -> Result<String> {
+        let client = self
+            .image_client
+            .get_or_try_init(
+                || async move { initialize_image_client(self.config.image.clone()).await },
+            )
+            .await?;
+        let manifest_digest = client
+            .lock()
+            .await
+            .guest_pull_image(image_url, Path::new(bundle_path), &None, &None)
+            .await
+            .map_err(|e| Error::ImagePull { source: e })?;
+        Ok(manifest_digest)
+    }
     async fn pull_content(&self, image_url: &str, content_path: &str) -> Result<String> {
         let client = self
             .image_client

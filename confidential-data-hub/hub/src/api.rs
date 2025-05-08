@@ -34,4 +34,6 @@ pub trait DataHub {
     async fn pull_image(&self, _image_url: &str, _bundle_path: &str) -> Result<String>;
 
     async fn pull_content(&self, image_url: &str, content_path: &str) -> Result<String>;
+
+    async fn guest_pull_image(&self, _image_url: &str, _bundle_path: &str) -> Result<String>;
 }

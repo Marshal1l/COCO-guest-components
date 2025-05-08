@@ -6,6 +6,7 @@ use anyhow::Ok;
 use anyhow::{bail, Context, Result};
 use log::error;
 use log::info;
+use log::warn;
 use oci_client::manifest::{OciDescriptor, OciImageManifest};
 use oci_client::secrets::RegistryAuth;
 use oci_client::Reference;
@@ -175,6 +176,35 @@ impl ImageClient {
         auth_info: &Option<&str>,
         decrypt_config: &Option<&str>,
     ) -> Result<String> {
+        //assume guest cvm call image cvm
+        //map to mem on /tmp/image_id
+        //return image_id:String
+        let image_id =
+            "sha256:ff7a7936e9306ce4a789cf5523922da5e585dc1216e400efb3b6872a5137ee6b".to_string();
+        let nosha_id = &image_id.replace("sha256:", "");
+        let map_dir = ["/tmp/", &nosha_id].concat();
+        let map_path = Path::new(&map_dir);
+        info!(
+            "[guest_pull_image] start guest pull \nbundle_dir={}\nimage_id={}\nmap_dir={}",
+            &bundle_dir.display(),
+            image_id,
+            map_dir
+        );
+        let map_result = self.create_map_bundle(bundle_dir, map_path, image_id).await;
+        match map_result {
+            std::result::Result::Ok(result) => {
+                info!(
+                    "[create_map_bundle] create_map_bundle successfully={}",
+                    result
+                );
+                return Ok("TODO".to_string());
+            }
+            //already have the image
+            std::result::Result::Err(_err) => {
+                info!("[create_map_bundle] create_map_bundle failed={}", _err);
+                return Ok("TODO".to_string());
+            }
+        }
     }
     // guest-fn:create bundle from the image in map mem.
     // map_dir must be /tmp/image_id/
@@ -225,7 +255,6 @@ impl ImageClient {
     pub async fn pull_image_content(
         &mut self,
         image_url: &str,
-        _content_dir: &Path,
         auth_info: &Option<&str>,
         decrypt_config: &Option<&str>,
     ) -> Result<String> {
@@ -363,12 +392,12 @@ impl ImageClient {
     pub async fn pull_content(
         &mut self,
         image_url: &str,
-        content_dir: &Path,
+        _content_dir: &Path,
         auth_info: &Option<&str>,
         decrypt_config: &Option<&str>,
     ) -> Result<String> {
         let image_id = self
-            .pull_image_content(image_url, content_dir, auth_info, decrypt_config)
+            .pull_image_content(image_url, auth_info, decrypt_config)
             .await;
         //create dest meta_store.json
         //get image_id
@@ -418,14 +447,15 @@ impl ImageClient {
             //std::mem::drop(m);
             let dest_layer_meta = &mut dest_file_meta.layer_metas;
             //3.modify dest_file_meta's layer store path to /tmp/image_id/
-            let modify_dir = ["/tmp/", &image_id, "/"].concat();
+            let nosha_id = &image_id.replace("sha256:", "");
+            let modify_dir = ["/tmp/", &nosha_id, "/"].concat();
             for dest_layer in dest_layer_meta.iter_mut() {
                 dest_layer.store_path =
                     dest_layer.store_path.replace(DEFAULT_WORK_DIR, &modify_dir);
                 //info!("dest_layer.store_path:{}", dest_layer.store_path);
             }
             //4.set the dest_meta_dir as workdir/metas/image_id/
-            let dest_suffix_dir = [DEFAULT_WORK_DIR, "metas/", &image_id, "/"].concat();
+            let dest_suffix_dir = [DEFAULT_WORK_DIR, "metas/", &nosha_id, "/"].concat();
             let dest_meta_dir = [&dest_suffix_dir, "meta_store.json"].concat();
             //5.make sure the directory workdir/metas/image_id/ exists
             if !Path::new(&dest_suffix_dir).exists() {
@@ -764,7 +794,6 @@ fn create_bundle(
         .rev()
         .map(|l| l.store_path.as_str())
         .collect::<Vec<&str>>();
-
     snapshot.mount(&layer_path, &bundle_dir.join(BUNDLE_ROOTFS))?;
 
     let image_config = image_data.image_config.clone();

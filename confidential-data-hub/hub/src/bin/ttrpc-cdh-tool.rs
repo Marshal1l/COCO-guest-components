@@ -62,6 +62,8 @@ enum Operation {
     PullImage(PullImageArgs),
     ///Pull content
     PullContent(PullContentArgs),
+    //guest pull image
+    GuestPullImage(GuestPullImageArgs),
 }
 
 #[derive(Args)]
@@ -119,6 +121,18 @@ struct PullContentArgs {
     #[arg(short, long)]
     content_path: String,
 }
+
+#[derive(Args)]
+#[command(author, version, about, long_about = None)]
+struct GuestPullImageArgs {
+    /// Reference of the image
+    #[arg(short, long)]
+    image_url: String,
+
+    /// Path to store the image bundle
+    #[arg(short, long)]
+    bundle_path: String,
+}
 pub struct ImagePullService {
     client_image_pull: ImagePullServiceClient,
     client_unwrap_key: KeyProviderServiceClient,
@@ -136,6 +150,21 @@ impl ImagePullService {
             timeout_image_pull,
         }
     }
+    async fn guest_pull_image(&self, image_path: &str, bundle_path: &str) -> Result<String> {
+        let req = GuestImagePullRequest {
+            image_url: image_path.to_string(),
+            bundle_path: bundle_path.to_string(),
+            ..Default::default()
+        };
+        print!("seding guest_pull_image request to CDH: {:?}\n", req);
+        let res = self
+            .client_image_pull
+            .guest_pull_image(ttrpc::context::with_timeout(self.timeout_image_pull), &req)
+            .await?;
+        println!("CDH guest_pull_image response: {:?}\n", res.manifest_digest);
+        Ok(res.manifest_digest)
+    }
+
     async fn pull_content(&self, image_path: &str, content_path: &str) -> Result<String> {
         let req = ContentPullRequest {
             image_url: image_path.to_string(),
@@ -259,6 +288,13 @@ async fn main() {
                 .await
                 .expect("pull content");
             println!("content pull success:{}", res);
+        }
+        Operation::GuestPullImage(arg) => {
+            let res = image_pull_service
+                .guest_pull_image(&arg.image_url, &arg.bundle_path)
+                .await
+                .expect("pull image");
+            println!("guest pull image success:{}", res);
         }
     }
     //TODO: start a server and wait for guest cvm to do image_pull and memory map//

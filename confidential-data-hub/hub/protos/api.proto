@@ -41,6 +41,14 @@ message ImagePullResponse {
     string manifest_digest = 1;
 }
 
+message GuestImagePullRequest {
+    string image_url = 1;
+    string bundle_path = 2;
+}
+message GuestImagePullResponse {
+    string manifest_digest = 1;
+}
+
 message ContentPullRequest {
     string image_url = 1;
     string content_path = 2;
@@ -64,5 +72,6 @@ service SecureMountService {
 
 service ImagePullService {
     rpc PullImage(ImagePullRequest) returns (ImagePullResponse) {};
+    rpc GuestPullImage(GuestImagePullRequest) returns (GuestImagePullResponse) {};
     rpc PullContent(ContentPullRequest) returns (ContentPullResponse) {};
 }

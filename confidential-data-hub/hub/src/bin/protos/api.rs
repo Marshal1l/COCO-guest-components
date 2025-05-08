@@ -1087,6 +1087,268 @@ impl ::protobuf::reflect::ProtobufValue for ImagePullResponse {
     type RuntimeType = ::protobuf::reflect::rt::RuntimeTypeMessage<Self>;
 }
 
+// @@protoc_insertion_point(message:api.GuestImagePullRequest)
+#[derive(PartialEq,Clone,Default,Debug)]
+pub struct GuestImagePullRequest {
+    // message fields
+    // @@protoc_insertion_point(field:api.GuestImagePullRequest.image_url)
+    pub image_url: ::std::string::String,
+    // @@protoc_insertion_point(field:api.GuestImagePullRequest.bundle_path)
+    pub bundle_path: ::std::string::String,
+    // special fields
+    // @@protoc_insertion_point(special_field:api.GuestImagePullRequest.special_fields)
+    pub special_fields: ::protobuf::SpecialFields,
+}
+
+impl<'a> ::std::default::Default for &'a GuestImagePullRequest {
+    fn default() -> &'a GuestImagePullRequest {
+        <GuestImagePullRequest as ::protobuf::Message>::default_instance()
+    }
+}
+
+impl GuestImagePullRequest {
+    pub fn new() -> GuestImagePullRequest {
+        ::std::default::Default::default()
+    }
+
+    fn generated_message_descriptor_data() -> ::protobuf::reflect::GeneratedMessageDescriptorData {
+        let mut fields = ::std::vec::Vec::with_capacity(2);
+        let mut oneofs = ::std::vec::Vec::with_capacity(0);
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "image_url",
+            |m: &GuestImagePullRequest| { &m.image_url },
+            |m: &mut GuestImagePullRequest| { &mut m.image_url },
+        ));
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "bundle_path",
+            |m: &GuestImagePullRequest| { &m.bundle_path },
+            |m: &mut GuestImagePullRequest| { &mut m.bundle_path },
+        ));
+        ::protobuf::reflect::GeneratedMessageDescriptorData::new_2::<GuestImagePullRequest>(
+            "GuestImagePullRequest",
+            fields,
+            oneofs,
+        )
+    }
+}
+
+impl ::protobuf::Message for GuestImagePullRequest {
+    const NAME: &'static str = "GuestImagePullRequest";
+
+    fn is_initialized(&self) -> bool {
+        true
+    }
+
+    fn merge_from(&mut self, is: &mut ::protobuf::CodedInputStream<'_>) -> ::protobuf::Result<()> {
+        while let Some(tag) = is.read_raw_tag_or_eof()? {
+            match tag {
+                10 => {
+                    self.image_url = is.read_string()?;
+                },
+                18 => {
+                    self.bundle_path = is.read_string()?;
+                },
+                tag => {
+                    ::protobuf::rt::read_unknown_or_skip_group(tag, is, self.special_fields.mut_unknown_fields())?;
+                },
+            };
+        }
+        ::std::result::Result::Ok(())
+    }
+
+    // Compute sizes of nested messages
+    #[allow(unused_variables)]
+    fn compute_size(&self) -> u64 {
+        let mut my_size = 0;
+        if !self.image_url.is_empty() {
+            my_size += ::protobuf::rt::string_size(1, &self.image_url);
+        }
+        if !self.bundle_path.is_empty() {
+            my_size += ::protobuf::rt::string_size(2, &self.bundle_path);
+        }
+        my_size += ::protobuf::rt::unknown_fields_size(self.special_fields.unknown_fields());
+        self.special_fields.cached_size().set(my_size as u32);
+        my_size
+    }
+
+    fn write_to_with_cached_sizes(&self, os: &mut ::protobuf::CodedOutputStream<'_>) -> ::protobuf::Result<()> {
+        if !self.image_url.is_empty() {
+            os.write_string(1, &self.image_url)?;
+        }
+        if !self.bundle_path.is_empty() {
+            os.write_string(2, &self.bundle_path)?;
+        }
+        os.write_unknown_fields(self.special_fields.unknown_fields())?;
+        ::std::result::Result::Ok(())
+    }
+
+    fn special_fields(&self) -> &::protobuf::SpecialFields {
+        &self.special_fields
+    }
+
+    fn mut_special_fields(&mut self) -> &mut ::protobuf::SpecialFields {
+        &mut self.special_fields
+    }
+
+    fn new() -> GuestImagePullRequest {
+        GuestImagePullRequest::new()
+    }
+
+    fn clear(&mut self) {
+        self.image_url.clear();
+        self.bundle_path.clear();
+        self.special_fields.clear();
+    }
+
+    fn default_instance() -> &'static GuestImagePullRequest {
+        static instance: GuestImagePullRequest = GuestImagePullRequest {
+            image_url: ::std::string::String::new(),
+            bundle_path: ::std::string::String::new(),
+            special_fields: ::protobuf::SpecialFields::new(),
+        };
+        &instance
+    }
+}
+
+impl ::protobuf::MessageFull for GuestImagePullRequest {
+    fn descriptor() -> ::protobuf::reflect::MessageDescriptor {
+        static descriptor: ::protobuf::rt::Lazy<::protobuf::reflect::MessageDescriptor> = ::protobuf::rt::Lazy::new();
+        descriptor.get(|| file_descriptor().message_by_package_relative_name("GuestImagePullRequest").unwrap()).clone()
+    }
+}
+
+impl ::std::fmt::Display for GuestImagePullRequest {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        ::protobuf::text_format::fmt(self, f)
+    }
+}
+
+impl ::protobuf::reflect::ProtobufValue for GuestImagePullRequest {
+    type RuntimeType = ::protobuf::reflect::rt::RuntimeTypeMessage<Self>;
+}
+
+// @@protoc_insertion_point(message:api.GuestImagePullResponse)
+#[derive(PartialEq,Clone,Default,Debug)]
+pub struct GuestImagePullResponse {
+    // message fields
+    // @@protoc_insertion_point(field:api.GuestImagePullResponse.manifest_digest)
+    pub manifest_digest: ::std::string::String,
+    // special fields
+    // @@protoc_insertion_point(special_field:api.GuestImagePullResponse.special_fields)
+    pub special_fields: ::protobuf::SpecialFields,
+}
+
+impl<'a> ::std::default::Default for &'a GuestImagePullResponse {
+    fn default() -> &'a GuestImagePullResponse {
+        <GuestImagePullResponse as ::protobuf::Message>::default_instance()
+    }
+}
+
+impl GuestImagePullResponse {
+    pub fn new() -> GuestImagePullResponse {
+        ::std::default::Default::default()
+    }
+
+    fn generated_message_descriptor_data() -> ::protobuf::reflect::GeneratedMessageDescriptorData {
+        let mut fields = ::std::vec::Vec::with_capacity(1);
+        let mut oneofs = ::std::vec::Vec::with_capacity(0);
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "manifest_digest",
+            |m: &GuestImagePullResponse| { &m.manifest_digest },
+            |m: &mut GuestImagePullResponse| { &mut m.manifest_digest },
+        ));
+        ::protobuf::reflect::GeneratedMessageDescriptorData::new_2::<GuestImagePullResponse>(
+            "GuestImagePullResponse",
+            fields,
+            oneofs,
+        )
+    }
+}
+
+impl ::protobuf::Message for GuestImagePullResponse {
+    const NAME: &'static str = "GuestImagePullResponse";
+
+    fn is_initialized(&self) -> bool {
+        true
+    }
+
+    fn merge_from(&mut self, is: &mut ::protobuf::CodedInputStream<'_>) -> ::protobuf::Result<()> {
+        while let Some(tag) = is.read_raw_tag_or_eof()? {
+            match tag {
+                10 => {
+                    self.manifest_digest = is.read_string()?;
+                },
+                tag => {
+                    ::protobuf::rt::read_unknown_or_skip_group(tag, is, self.special_fields.mut_unknown_fields())?;
+                },
+            };
+        }
+        ::std::result::Result::Ok(())
+    }
+
+    // Compute sizes of nested messages
+    #[allow(unused_variables)]
+    fn compute_size(&self) -> u64 {
+        let mut my_size = 0;
+        if !self.manifest_digest.is_empty() {
+            my_size += ::protobuf::rt::string_size(1, &self.manifest_digest);
+        }
+        my_size += ::protobuf::rt::unknown_fields_size(self.special_fields.unknown_fields());
+        self.special_fields.cached_size().set(my_size as u32);
+        my_size
+    }
+
+    fn write_to_with_cached_sizes(&self, os: &mut ::protobuf::CodedOutputStream<'_>) -> ::protobuf::Result<()> {
+        if !self.manifest_digest.is_empty() {
+            os.write_string(1, &self.manifest_digest)?;
+        }
+        os.write_unknown_fields(self.special_fields.unknown_fields())?;
+        ::std::result::Result::Ok(())
+    }
+
+    fn special_fields(&self) -> &::protobuf::SpecialFields {
+        &self.special_fields
+    }
+
+    fn mut_special_fields(&mut self) -> &mut ::protobuf::SpecialFields {
+        &mut self.special_fields
+    }
+
+    fn new() -> GuestImagePullResponse {
+        GuestImagePullResponse::new()
+    }
+
+    fn clear(&mut self) {
+        self.manifest_digest.clear();
+        self.special_fields.clear();
+    }
+
+    fn default_instance() -> &'static GuestImagePullResponse {
+        static instance: GuestImagePullResponse = GuestImagePullResponse {
+            manifest_digest: ::std::string::String::new(),
+            special_fields: ::protobuf::SpecialFields::new(),
+        };
+        &instance
+    }
+}
+
+impl ::protobuf::MessageFull for GuestImagePullResponse {
+    fn descriptor() -> ::protobuf::reflect::MessageDescriptor {
+        static descriptor: ::protobuf::rt::Lazy<::protobuf::reflect::MessageDescriptor> = ::protobuf::rt::Lazy::new();
+        descriptor.get(|| file_descriptor().message_by_package_relative_name("GuestImagePullResponse").unwrap()).clone()
+    }
+}
+
+impl ::std::fmt::Display for GuestImagePullResponse {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        ::protobuf::text_format::fmt(self, f)
+    }
+}
+
+impl ::protobuf::reflect::ProtobufValue for GuestImagePullResponse {
+    type RuntimeType = ::protobuf::reflect::rt::RuntimeTypeMessage<Self>;
+}
+
 // @@protoc_insertion_point(message:api.ContentPullRequest)
 #[derive(PartialEq,Clone,Default,Debug)]
 pub struct ContentPullRequest {
@@ -1365,19 +1627,23 @@ static file_descriptor_proto_data: &'static [u8] = b"\
     ImagePullRequest\x12\x1b\n\timage_url\x18\x01\x20\x01(\tR\x08imageUrl\
     \x12\x1f\n\x0bbundle_path\x18\x02\x20\x01(\tR\nbundlePath\"<\n\x11ImageP\
     ullResponse\x12'\n\x0fmanifest_digest\x18\x01\x20\x01(\tR\x0emanifestDig\
-    est\"T\n\x12ContentPullRequest\x12\x1b\n\timage_url\x18\x01\x20\x01(\tR\
-    \x08imageUrl\x12!\n\x0ccontent_path\x18\x02\x20\x01(\tR\x0bcontentPath\"\
-    >\n\x13ContentPullResponse\x12'\n\x0fmanifest_digest\x18\x01\x20\x01(\tR\
-    \x0emanifestDigest2V\n\x13SealedSecretService\x12?\n\x0cUnsealSecret\x12\
-    \x16.api.UnsealSecretInput\x1a\x17.api.UnsealSecretOutput2V\n\x12GetReso\
-    urceService\x12@\n\x0bGetResource\x12\x17.api.GetResourceRequest\x1a\x18\
-    .api.GetResourceResponse2V\n\x12SecureMountService\x12@\n\x0bSecureMount\
-    \x12\x17.api.SecureMountRequest\x1a\x18.api.SecureMountResponse2\x90\x01\
-    \n\x10ImagePullService\x12:\n\tPullImage\x12\x15.api.ImagePullRequest\
-    \x1a\x16.api.ImagePullResponse\x12@\n\x0bPullContent\x12\x17.api.Content\
-    PullRequest\x1a\x18.api.ContentPullResponseBaZ_github.com/confidential-c\
-    ontainers/guest-components/confidential-data-hub/golang/pkg/api/cdhapib\
-    \x06proto3\
+    est\"U\n\x15GuestImagePullRequest\x12\x1b\n\timage_url\x18\x01\x20\x01(\
+    \tR\x08imageUrl\x12\x1f\n\x0bbundle_path\x18\x02\x20\x01(\tR\nbundlePath\
+    \"A\n\x16GuestImagePullResponse\x12'\n\x0fmanifest_digest\x18\x01\x20\
+    \x01(\tR\x0emanifestDigest\"T\n\x12ContentPullRequest\x12\x1b\n\timage_u\
+    rl\x18\x01\x20\x01(\tR\x08imageUrl\x12!\n\x0ccontent_path\x18\x02\x20\
+    \x01(\tR\x0bcontentPath\">\n\x13ContentPullResponse\x12'\n\x0fmanifest_d\
+    igest\x18\x01\x20\x01(\tR\x0emanifestDigest2V\n\x13SealedSecretService\
+    \x12?\n\x0cUnsealSecret\x12\x16.api.UnsealSecretInput\x1a\x17.api.Unseal\
+    SecretOutput2V\n\x12GetResourceService\x12@\n\x0bGetResource\x12\x17.api\
+    .GetResourceRequest\x1a\x18.api.GetResourceResponse2V\n\x12SecureMountSe\
+    rvice\x12@\n\x0bSecureMount\x12\x17.api.SecureMountRequest\x1a\x18.api.S\
+    ecureMountResponse2\xdb\x01\n\x10ImagePullService\x12:\n\tPullImage\x12\
+    \x15.api.ImagePullRequest\x1a\x16.api.ImagePullResponse\x12I\n\x0eGuestP\
+    ullImage\x12\x1a.api.GuestImagePullRequest\x1a\x1b.api.GuestImagePullRes\
+    ponse\x12@\n\x0bPullContent\x12\x17.api.ContentPullRequest\x1a\x18.api.C\
+    ontentPullResponseBaZ_github.com/confidential-containers/guest-component\
+    s/confidential-data-hub/golang/pkg/api/cdhapib\x06proto3\
 ";
 
 /// `FileDescriptorProto` object which was a source for this generated file
@@ -1395,7 +1661,7 @@ pub fn file_descriptor() -> &'static ::protobuf::reflect::FileDescriptor {
     file_descriptor.get(|| {
         let generated_file_descriptor = generated_file_descriptor_lazy.get(|| {
             let mut deps = ::std::vec::Vec::with_capacity(0);
-            let mut messages = ::std::vec::Vec::with_capacity(10);
+            let mut messages = ::std::vec::Vec::with_capacity(12);
             messages.push(UnsealSecretInput::generated_message_descriptor_data());
             messages.push(UnsealSecretOutput::generated_message_descriptor_data());
             messages.push(GetResourceRequest::generated_message_descriptor_data());
@@ -1404,6 +1670,8 @@ pub fn file_descriptor() -> &'static ::protobuf::reflect::FileDescriptor {
             messages.push(SecureMountResponse::generated_message_descriptor_data());
             messages.push(ImagePullRequest::generated_message_descriptor_data());
             messages.push(ImagePullResponse::generated_message_descriptor_data());
+            messages.push(GuestImagePullRequest::generated_message_descriptor_data());
+            messages.push(GuestImagePullResponse::generated_message_descriptor_data());
             messages.push(ContentPullRequest::generated_message_descriptor_data());
             messages.push(ContentPullResponse::generated_message_descriptor_data());
             let mut enums = ::std::vec::Vec::with_capacity(0);

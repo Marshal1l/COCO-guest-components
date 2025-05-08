@@ -150,6 +150,7 @@ impl<'a> PullClient<'a> {
         layer_reader: (impl tokio::io::AsyncRead + Unpin + Send),
         ms: Arc<RwLock<MetaStore>>,
     ) -> Result<LayerMeta> {
+        // if layer is already in /run/image-rs/layers,do not need to pull
         if let Some(layer_meta) = ms.read().await.layer_db.get(&layer.digest) {
             return Ok(layer_meta.clone());
         }
