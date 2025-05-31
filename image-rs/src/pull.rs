@@ -2,6 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::decoder::Compression;
+use crate::decrypt::Decryptor;
+use crate::image::LayerMeta;
+use crate::layer_store::LayerStore;
+use crate::meta_store::MetaStore;
+use crate::stream::stream_processing;
 use anyhow::{anyhow, bail, Context, Result};
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use oci_client::client::{Certificate, CertificateEncoding, ClientConfig};
@@ -9,17 +15,12 @@ use oci_client::manifest::{OciDescriptor, OciImageManifest};
 use oci_client::{secrets::RegistryAuth, Client, Reference};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::fs::{self, File};
+use tokio::io::{AsyncRead, AsyncWriteExt};
 use tokio::sync::RwLock;
 use tokio_util::io::StreamReader;
-
-use crate::decoder::Compression;
-use crate::decrypt::Decryptor;
-use crate::image::LayerMeta;
-use crate::layer_store::LayerStore;
-use crate::meta_store::MetaStore;
-use crate::stream::stream_processing;
-
 /// The PullClient connects to remote OCI registry, pulls the container image,
 /// and save the image layers under the layer store and return the layer meta info.
 pub struct PullClient<'a> {
@@ -147,7 +148,7 @@ impl<'a> PullClient<'a> {
         layer: OciDescriptor,
         diff_id: String,
         decrypt_config: &Option<&str>,
-        layer_reader: (impl tokio::io::AsyncRead + Unpin + Send),
+        mut layer_reader: (impl tokio::io::AsyncRead + Unpin + Send),
         ms: Arc<RwLock<MetaStore>>,
     ) -> Result<LayerMeta> {
         // if layer is already in /run/image-rs/layers,do not need to pull
@@ -161,7 +162,12 @@ impl<'a> PullClient<'a> {
             store_path: destination.display().to_string(),
             ..Default::default()
         };
-
+        // bail!(
+        //     "destination:{}\n\n\n\n\n\n",
+        //     destination.display().to_string()
+        // );
+        //////////////////////////////////////
+        //////////////////////////////////////
         let decryptor = Decryptor::from_media_type(&layer.media_type);
 
         // There are two types of layers:
@@ -193,6 +199,30 @@ impl<'a> PullClient<'a> {
                 .await?;
             layer_meta.encrypted = true;
         } else {
+            //////////////////////////
+            let compressed_path = PathBuf::from(format!("{}.compress", &destination.display()));
+            //bail!("{}", compressed_path.display().to_string());
+            if let Some(parent) = &compressed_path.parent() {
+                fs::create_dir_all(parent)
+                    .await
+                    .context("Failed to create parent directories")?;
+            }
+            let mut compressed_file = File::create(&compressed_path)
+                .await
+                .context("Failed to create compressed file")?;
+
+            tokio::io::copy(&mut layer_reader, &mut compressed_file)
+                .await
+                .context("failed to save compressed layer")?;
+            compressed_file
+                .flush()
+                .await
+                .context("failed to flush compressed file")?;
+            // 新增：重新打开保存的压缩文件作为新的 layer_reader
+            let layer_reader = File::open(&compressed_path)
+                .await
+                .context("failed to open compressed file for reading")?;
+            //////////////////////////
             layer_meta.uncompressed_digest = self
                 .async_decompress_unpack_layer(
                     layer_reader,

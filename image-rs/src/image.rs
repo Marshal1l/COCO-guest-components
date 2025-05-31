@@ -1,22 +1,23 @@
 // Copyright (c) 2022 Intel Corporation
 //
 // SPDX-License-Identifier: Apache-2.0
+use crate::stream::stream_processing;
 use anyhow::Error;
 use anyhow::Ok;
 use anyhow::{bail, Context, Result};
 use log::error;
 use log::info;
-use log::warn;
 use oci_client::manifest::{OciDescriptor, OciImageManifest};
 use oci_client::secrets::RegistryAuth;
 use oci_client::Reference;
 use oci_spec::image::{ImageConfiguration, Os};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
 use tokio::sync::RwLock;
 
 use crate::auth::Auth;
@@ -77,7 +78,116 @@ pub struct ImageMeta {
     /// The metadata of image layers.
     pub layer_metas: Vec<LayerMeta>,
 }
+//the image file list which the guest cvm need to map
+/// The metadata info for container image.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ImageFileList {
+    pub host_meta_path: String,
+    pub guest_meta_path: String,
+    pub image_layer_paths: Vec<String>,
+    pub guest_layer_paths: Vec<String>,
+    pub host_file_paths: Vec<String>,
+    pub host_dir_paths: Vec<String>,
+    pub guest_file_paths: Vec<String>,
+    pub guest_dir_paths: Vec<String>,
+}
+impl ImageFileList {
+    pub fn new() -> Self {
+        ImageFileList {
+            host_meta_path: String::new(),
+            guest_meta_path: String::new(),
+            image_layer_paths: Vec::<String>::new(),
+            guest_layer_paths: Vec::<String>::new(),
+            host_file_paths: Vec::<String>::new(),
+            host_dir_paths: Vec::<String>::new(),
+            guest_file_paths: Vec::<String>::new(),
+            guest_dir_paths: Vec::<String>::new(),
+        }
+    }
+    //add layer to file_list by layer's diffid
+    pub fn add_layer(&mut self, host_layer_path: &str, guest_layer_path: &str) {
+        self.image_layer_paths
+            .push([host_layer_path.to_string(), ".compress".to_string()].concat());
+        self.guest_layer_paths
+            .push([guest_layer_path.to_string(), ".compress".to_string()].concat());
+    }
+    pub fn set_meta_path(&mut self, host_meta_path: &str, guest_meta_path: &str) {
+        self.host_meta_path = host_meta_path.to_string();
+        self.guest_meta_path = guest_meta_path.to_string();
+    }
+    pub fn add_file(&mut self, host_file: &str, guest_file: &str) {
+        self.host_file_paths.push(host_file.to_string());
+        self.guest_file_paths.push(guest_file.to_string());
+    }
+    fn visit_dirs(&mut self, dir: &Path, modify_path: &str) -> Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
 
+            if path.is_dir() {
+                // 如果是目录，递归调用
+                self.host_dir_paths
+                    .push(path.to_string_lossy().into_owned());
+                self.guest_dir_paths.push(
+                    path.to_string_lossy()
+                        .into_owned()
+                        .replace(DEFAULT_WORK_DIR, &modify_path),
+                );
+                self.visit_dirs(&path, &modify_path)?;
+            } else {
+                // 如果是文件，添加路径到Vec
+                self.host_file_paths
+                    .push(path.to_string_lossy().into_owned());
+                self.guest_file_paths.push(
+                    path.to_string_lossy()
+                        .into_owned()
+                        .replace(DEFAULT_WORK_DIR, &modify_path),
+                );
+            }
+        }
+        Ok(())
+    }
+    pub fn set_lists(&mut self, modify_path: &str) {
+        let paths: Vec<String> = self.image_layer_paths.iter().cloned().collect();
+        for image_layer_path in paths {
+            let host_layer_path = Path::new(&image_layer_path);
+            let _ = self.visit_dirs(&host_layer_path, &modify_path);
+        }
+    }
+    pub fn clear(&mut self) {
+        self.host_meta_path.clear();
+        self.guest_meta_path.clear();
+        self.image_layer_paths.clear();
+        self.guest_layer_paths.clear();
+        self.host_file_paths.clear();
+        self.guest_file_paths.clear();
+    }
+    pub fn save_to_file(&self, file_path: &str) -> Result<()> {
+        // 序列化为 JSON 字符串
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        // 获取文件所在的目录
+        let path = Path::new(file_path);
+        if let Some(parent) = path.parent() {
+            // 如果目录不存在，创建目录
+            fs::create_dir_all(parent)?;
+        }
+
+        // 创建或打开文件并写入 JSON 数据
+        let mut file = File::create(file_path)?;
+        file.write_all(json.as_bytes())?;
+        file.flush()?;
+
+        Ok(())
+    }
+    pub fn from_file(file_path: &str) -> Result<Self> {
+        let json = fs::read_to_string(file_path)?;
+        let image_list = serde_json::from_str(&json)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        Ok(image_list)
+    }
+}
 /// The`image-rs` client will support OCI image
 /// pulling, image signing verfication, image layer
 /// decryption/unpack/store and management.
@@ -167,6 +277,26 @@ impl ImageClient {
         }
     }
     // guest-fn:
+    // guest uncompress the compressed file on file_path
+    // the uncompressed output to dest_path
+    // file_decoder:uncompressed||Gzip||Zstd
+    // diff_id:the layer's diff_id
+    pub async fn guest_uncompress(
+        file_path: &str,
+        dest_path: &str,
+        diff_id: &str,
+        file_decoder: &str,
+    ) -> Result<String> {
+        let decoder = Compression::try_from(file_decoder)?;
+        let destination = Path::new(&dest_path);
+        let layer_reader = tokio::fs::File::open(&file_path)
+            .await
+            .context("failed to open compressed file for reading")?;
+        let async_decoder = decoder.async_decompress(layer_reader);
+        stream_processing(async_decoder, diff_id, destination).await
+    }
+
+    // guest-fn:
     // 1.call image-cvm pull image and map the decrypt and uncompressed image to guest-cvm on /tmp/image_id
     // 2.create snapshot(bundle) on bundle_dir by /tmp/image_id
     pub async fn guest_pull_image(
@@ -179,6 +309,10 @@ impl ImageClient {
         //assume guest cvm call image cvm
         //map to mem on /tmp/image_id
         //return image_id:String
+        //1.run guest_pull_content first
+        //2.then invoke guest_uncompress
+        //3.finally create_map_bundle
+        //return
         let image_id =
             "sha256:ff7a7936e9306ce4a789cf5523922da5e585dc1216e400efb3b6872a5137ee6b".to_string();
         let nosha_id = &image_id.replace("sha256:", "");
@@ -205,6 +339,14 @@ impl ImageClient {
                 return Ok("TODO".to_string());
             }
         }
+    }
+    //guest-fn:call image_cvm to
+    //1.tell the image cvm image_url and get the image_id
+    //2.get file_trans_list from image_cvm
+    //3.get meta.json from image_cvm
+    //4.get layers from image_cvm
+    pub async fn guest_pull_content(&mut self, image_url: &str) -> Result<String> {
+        return Ok("TODO".to_string());
     }
     // guest-fn:create bundle from the image in map mem.
     // map_dir must be /tmp/image_id/
@@ -387,7 +529,6 @@ impl ImageClient {
     //image-fn:
     //  1.pull_image_content:pull image, signature validate,decrypt and uncompress
     //  2.create dest meta_store.json
-    //  3.mem map {meta.json,layers} to guest cvm
     //  return image_id
     pub async fn pull_content(
         &mut self,
@@ -403,25 +544,19 @@ impl ImageClient {
         //get image_id
         match image_id {
             std::result::Result::Ok(result) => {
-                info!("[pull content]:image_id={}", result);
+                info!("[pull content]:image_id={}", &result);
                 //use image_id find image meta from meta_store.json
-                self.create_dest_meta(result).await;
-                //TODO:mem map
-                //load dest meta_store.json and dest image's layers to guest cvm mem
-                self.load_content().await;
-                //test create map bundle
-
-                return Ok("TODO".to_string());
+                self.create_dest_meta(result.clone()).await;
+                return Ok(result.to_string());
             }
             //already have the image
-            std::result::Result::Err(_err) => {
-                //info!("[pull content]:{}", _err);
-                self.load_content().await;
-                return Ok("TODO".to_string());
+            std::result::Result::Err(err) => {
+                return Err(err);
             }
         }
     }
     pub async fn create_dest_meta(&self, image_id: String) {
+        let mut image_file_list = ImageFileList::new();
         info!(
             "[create_dest_meta]:start create_dest_meta for image which id={}",
             image_id
@@ -450,13 +585,19 @@ impl ImageClient {
             let nosha_id = &image_id.replace("sha256:", "");
             let modify_dir = ["/tmp/", &nosha_id, "/"].concat();
             for dest_layer in dest_layer_meta.iter_mut() {
+                let before_dest_layer_path = dest_layer.store_path.clone();
                 dest_layer.store_path =
                     dest_layer.store_path.replace(DEFAULT_WORK_DIR, &modify_dir);
+                image_file_list.add_layer(&before_dest_layer_path, &dest_layer.store_path);
                 //info!("dest_layer.store_path:{}", dest_layer.store_path);
             }
             //4.set the dest_meta_dir as workdir/metas/image_id/
             let dest_suffix_dir = [DEFAULT_WORK_DIR, "metas/", &nosha_id, "/"].concat();
             let dest_meta_dir = [&dest_suffix_dir, "meta_store.json"].concat();
+            image_file_list.set_meta_path(
+                &dest_meta_dir,
+                &dest_meta_dir.replace(&dest_suffix_dir, &modify_dir),
+            );
             //5.make sure the directory workdir/metas/image_id/ exists
             if !Path::new(&dest_suffix_dir).exists() {
                 match fs::create_dir_all(&dest_suffix_dir) {
@@ -472,7 +613,6 @@ impl ImageClient {
             let mut dest_meta_store = MetaStore::default();
             dest_meta_store.image_db.insert(image_id, dest_file_meta);
             //add layers_store
-
             match dest_meta_store.write_to_file(&dest_meta_dir) {
                 std::result::Result::Ok(_) => info!(
                     "[create_dest_meta]:File written successfully={}",
@@ -482,11 +622,19 @@ impl ImageClient {
                     info!("[create_dest_meta]:Error writing file: {}", e)
                 }
             }
+            //image_file_list.set_lists(&modify_dir);
+            //7.save the image_file_list to workdir/metas/image_id/image_file_list.json
+            let dest_file_list_path =
+                dest_meta_dir.replace("meta_store.json", "image_file_list.json");
+            let _ = image_file_list.save_to_file(&dest_file_list_path);
         }
     }
     // load the dest_meta and image layers to mem
     pub async fn load_content(&self) {
         info!("[load_content]:load content to mem");
+        //load map content to mem
+        //include dest_meta and the image's image layers
+        //load content:ipa->realm's pa->this realm machine's pa should be continuous
     }
     /// pull_image pulls an image with optional auth info and decrypt config
     /// and store the pulled data under user defined work_dir/layers.

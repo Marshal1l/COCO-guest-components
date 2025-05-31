@@ -11,7 +11,7 @@ use crate::snapshots::SnapshotType;
 
 /// By default use a work dir in `/run` because for confidential guests `/run`
 /// is typically in a `tmpfs` which is backed by encrypted memory.
-pub const DEFAULT_WORK_DIR: &str = "/run/image-rs/";
+pub const DEFAULT_WORK_DIR: &str = "/tmp/run/image-rs/";
 
 /// Default path to policy file in KBS or locally
 pub const POLICY_FILE_PATH: &str = "kbs:///default/security-policy/test";

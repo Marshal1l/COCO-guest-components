@@ -297,5 +297,5 @@ async fn main() {
             println!("guest pull image success:{}", res);
         }
     }
-    //TODO: start a server and wait for guest cvm to do image_pull and memory map//
+    //TODO: start a server and wait for guest cvm to do content_pull and return the image_url to guest_cvm//
 }
