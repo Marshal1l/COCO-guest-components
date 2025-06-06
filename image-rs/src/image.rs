@@ -1,7 +1,17 @@
 // Copyright (c) 2022 Intel Corporation
 //
 // SPDX-License-Identifier: Apache-2.0
+use crate::auth::Auth;
+use crate::bundle::{create_runtime_config, BUNDLE_ROOTFS};
+use crate::config::{ImageConfig, CONFIGURATION_FILE_NAME, DEFAULT_WORK_DIR};
+use crate::decoder::Compression;
+use crate::layer_store::LayerStore;
+use crate::meta_store::{MetaStore, METAFILE};
+use crate::pull::PullClient;
+use crate::signature::SignatureValidator;
+use crate::snapshots::{SnapshotType, Snapshotter};
 use crate::stream::stream_processing;
+use anyhow::anyhow;
 use anyhow::Error;
 use anyhow::Ok;
 use anyhow::{bail, Context, Result};
@@ -14,22 +24,59 @@ use oci_spec::image::{ImageConfiguration, Os};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
+use std::ffi::CStr;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+//
+use nix::libc::{c_char, ioctl};
+use std::ffi::CString;
+use std::fs::OpenOptions;
+use std::os::unix::io::AsRawFd;
+//ioctl
+macro_rules! ior {
+    ($ty:expr, $nr:expr, $size:expr) => {
+        (($ty << 8) | $nr) as i32
+    };
+}
 
-use crate::auth::Auth;
-use crate::bundle::{create_runtime_config, BUNDLE_ROOTFS};
-use crate::config::{ImageConfig, CONFIGURATION_FILE_NAME, DEFAULT_WORK_DIR};
-use crate::decoder::Compression;
-use crate::layer_store::LayerStore;
-use crate::meta_store::{MetaStore, METAFILE};
-use crate::pull::PullClient;
-use crate::signature::SignatureValidator;
-use crate::snapshots::{SnapshotType, Snapshotter};
-
+macro_rules! iowr {
+    ($ty:expr, $nr:expr, $size:expr) => {
+        ((3 << 30) | ($ty << 8) | $nr | ($size << 16)) as i32 // 修正为 3 << 30
+    };
+}
+const RSI_IOCTL_MAGIC: u8 = b'R';
+const RSI_PRINT: i32 = ior!(RSI_IOCTL_MAGIC as u32, 0, 0);
+const GET_MAP_FILE: i32 = iowr!(
+    RSI_IOCTL_MAGIC as u32,
+    2,
+    std::mem::size_of::<MapFile>() as u32
+);
+const PULL_CONTENT: i32 = iowr!(
+    RSI_IOCTL_MAGIC as u32,
+    3,
+    std::mem::size_of::<ContentUrl>() as u32
+);
+const GET_IMAGE_ID: i32 = iowr!(
+    RSI_IOCTL_MAGIC as u32,
+    4,
+    std::mem::size_of::<ImageId>() as u32
+);
+#[repr(C)]
+#[derive(Debug)]
+struct MapFile {
+    host_file_path: [c_char; 128],
+    guest_file_path: [c_char; 128],
+}
+struct ContentUrl {
+    image_url: [c_char; 128],
+}
+struct ImageId {
+    id: [c_char; 128],
+}
+//
 #[cfg(feature = "snapshot-unionfs")]
 use crate::snapshots::occlum::unionfs::Unionfs;
 #[cfg(feature = "snapshot-overlayfs")]
@@ -222,6 +269,15 @@ impl Default for ImageClient {
 }
 
 impl ImageClient {
+    //tool
+    pub fn create_parent_dirs(&self, file_path: &str)->Result<String> {
+        let path = Path::new(file_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+            return Ok("create dir".to_string());
+        }
+        return Err(anyhow!("Failed to create dir"));
+    }
     ///Initialize metadata database and supported snapshots.
     pub fn init_snapshots(
         work_dir: &Path,
@@ -313,32 +369,68 @@ impl ImageClient {
         //2.then invoke guest_uncompress
         //3.finally create_map_bundle
         //return
-        let image_id =
-            "sha256:ff7a7936e9306ce4a789cf5523922da5e585dc1216e400efb3b6872a5137ee6b".to_string();
-        let nosha_id = &image_id.replace("sha256:", "");
-        let map_dir = ["/tmp/", &nosha_id].concat();
-        let map_path = Path::new(&map_dir);
-        info!(
-            "[guest_pull_image] start guest pull \nbundle_dir={}\nimage_id={}\nmap_dir={}",
-            &bundle_dir.display(),
-            image_id,
-            map_dir
-        );
-        let map_result = self.create_map_bundle(bundle_dir, map_path, image_id).await;
-        match map_result {
-            std::result::Result::Ok(result) => {
-                info!(
-                    "[create_map_bundle] create_map_bundle successfully={}",
-                    result
-                );
-                return Ok("TODO".to_string());
-            }
-            //already have the image
-            std::result::Result::Err(_err) => {
-                info!("[create_map_bundle] create_map_bundle failed={}", _err);
-                return Ok("TODO".to_string());
+        // let image_id =
+        //     "sha256:ff7a7936e9306ce4a789cf5523922da5e585dc1216e400efb3b6872a5137ee6b".to_string();
+        // let nosha_id = &image_id.replace("sha256:", "");
+        // let map_dir = ["/tmp/", &nosha_id].concat();
+        // let map_path = Path::new(&map_dir);
+        // info!(
+        //     "[guest_pull_image] start guest pull \nbundle_dir={}\nimage_id={}\nmap_dir={}",
+        //     &bundle_dir.display(),
+        //     image_id,
+        //     map_dir
+        // );
+        // let map_result = self.create_map_bundle(bundle_dir, map_path, image_id).await;
+        // match map_result {
+        //     std::result::Result::Ok(result) => {
+        //         info!(
+        //             "[create_map_bundle] create_map_bundle successfully={}",
+        //             result
+        //         );
+        //         return Ok("TODO".to_string());
+        //     }
+        //     //already have the image
+        //     std::result::Result::Err(_err) => {
+        //         info!("[create_map_bundle] create_map_bundle failed={}", _err);
+        //         return Ok("TODO".to_string());
+        //     }
+        // }
+        let _ = self.guest_pull_content(image_url).await;
+        return Ok("TODO".to_string());
+    }
+    pub async fn map_file(
+        &self,
+        rsi_file: &File,
+        host_file_path: &str,
+        guest_file_path: &str,
+    ) -> Result<String> {
+        self.create_parent_dirs(guest_file_path)?;
+        let rsi_fd = rsi_file.as_raw_fd();
+        let mut map_file_list = MapFile {
+            host_file_path: [0; 128],
+            guest_file_path: [0; 128],
+        };
+        let host_file_list_path_cstring = CString::new(host_file_path)?.into_bytes_with_nul();
+        let guest_file_list_path_cstring = CString::new(guest_file_path)?.into_bytes_with_nul();
+        for (i, &byte) in host_file_list_path_cstring.iter().enumerate() {
+            if i < 128 {
+                map_file_list.host_file_path[i] = byte as c_char;
             }
         }
+        for (i, &byte) in guest_file_list_path_cstring.iter().enumerate() {
+            if i < 128 {
+                map_file_list.guest_file_path[i] = byte as c_char;
+            }
+        }
+        unsafe {
+            let ret = ioctl(rsi_fd, GET_MAP_FILE, &mut map_file_list as *mut MapFile);
+            if ret < 0 {
+                println!("GET_MAP_FILE, failed,TRY again\n");
+                return Err(anyhow!("Failed to GET_MAP_FILE"));
+            }
+            println!("GET_MAP_FILE, IOCTL called successfully");
+        }
+        return Ok("Successfully GET_MAP_FILE".to_string());
     }
     //guest-fn:call image_cvm to
     //1.tell the image cvm image_url and get the image_id
@@ -346,6 +438,71 @@ impl ImageClient {
     //3.get meta.json from image_cvm
     //4.get layers from image_cvm
     pub async fn guest_pull_content(&mut self, image_url: &str) -> Result<String> {
+        //获取句柄
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/rsi_ioctl")?;
+        let fd = file.as_raw_fd();
+        //调用image_id pull_content
+        let image_path = CString::new(image_url)?.into_bytes_with_nul();
+        let mut content_url = ContentUrl {
+            image_url: [0; 128],
+        };
+        for (i, &byte) in image_path.iter().enumerate() {
+            if i < 128 {
+                content_url.image_url[i] = byte as c_char;
+            }
+        }
+        println!("image_url: {:?}", content_url.image_url);
+        unsafe {
+            let ret = ioctl(fd, PULL_CONTENT, &mut content_url as *mut ContentUrl);
+            if ret < 0 {
+                println!("PULL_CONTENT, failed\n");
+                return Ok("TODO".to_string());
+            }
+            println!("PULL_CONTENT, IOCTL called successfully");
+        }
+        //获取image_id
+        let mut image_id = ImageId { id: [0; 128] };
+        unsafe {
+            let mut ret: i32 = -1;
+            while ret != 0 {
+                ret = ioctl(fd, GET_IMAGE_ID, &mut image_id as *mut ImageId);
+                if ret < 0 {
+                    println!("GET_IMAGE_ID, failed,TRY again\n");
+                }
+            }
+            println!("GET_IMAGE_ID, IOCTL called successfully");
+        }
+        println!("GOT THE IMAGE_ID:{:?}\n", image_id.id);
+        //将image_id转化成rust的字符串类型
+        let c_str = unsafe { CStr::from_ptr(image_id.id.as_ptr()) };
+        let dest_image_id = match c_str.to_str().map(|s| s.to_string()) {
+            std::result::Result::Ok(s) => s,
+            Err(e) => {
+                println!("error:{:?}\n", e);
+                return Err(anyhow!("Failed to convert C string"));
+            }
+        };
+        println!("dest_image_id={:?}\n", dest_image_id);
+        //构建目标cvm中的image_file_list.json路径
+        let host_file_list_path = [
+            "/tmp/run/image-rs/metas/",
+            &dest_image_id,
+            "/image_file_list.json",
+        ]
+        .concat();
+        let guest_file_list_path = ["/tmp/", &dest_image_id, "/image_file_list.json"].concat();
+        //映射image_file_list.json
+        self.map_file(&file, &host_file_list_path, &guest_file_list_path)
+            .await
+            .map(|v| println!("{:?}", v))?;
+        //读取json文件获取信息
+        //根据信息依次加载压缩之后的镜像层
+        //解压镜像层
+        //创建bundle目录
+        let _ = nix::unistd::close(fd);
         return Ok("TODO".to_string());
     }
     // guest-fn:create bundle from the image in map mem.
@@ -546,7 +703,7 @@ impl ImageClient {
             std::result::Result::Ok(result) => {
                 info!("[pull content]:image_id={}", &result);
                 //use image_id find image meta from meta_store.json
-                self.create_dest_meta(result.clone()).await;
+                self.create_dest_meta(image_url,result.clone()).await;
                 return Ok(result.to_string());
             }
             //already have the image
@@ -555,7 +712,20 @@ impl ImageClient {
             }
         }
     }
-    pub async fn create_dest_meta(&self, image_id: String) {
+    pub async fn create_dest_meta(&self,image_url:&str, image_id: String)->Result<String> {
+        //store the image_id into file named image_url
+        let image_name=&image_url.split('/').last().unwrap_or(image_url);
+        let store_image_id_str=[DEFAULT_WORK_DIR, "metas/",&image_name].concat();
+        let store_image_id_path = Path::new(&store_image_id_str);
+        if let Some(parent_image_id) = store_image_id_path.parent() {
+            // 如果目录不存在，创建目录
+            fs::create_dir_all(parent_image_id)?;
+        }
+        // 创建或打开文件并写入 JSON 数据
+        let mut file_image_id = File::create(store_image_id_path)?;
+        file_image_id.write_all(&image_id.replace("sha256:","").as_bytes())?;
+        file_image_id.flush()?;
+        //
         let mut image_file_list = ImageFileList::new();
         info!(
             "[create_dest_meta]:start create_dest_meta for image which id={}",
@@ -611,7 +781,7 @@ impl ImageClient {
             }
             //6.save the image_meta to workdir/metas/image_id/meta_store.json
             let mut dest_meta_store = MetaStore::default();
-            dest_meta_store.image_db.insert(image_id, dest_file_meta);
+            dest_meta_store.image_db.insert(image_id.clone(), dest_file_meta);
             //add layers_store
             match dest_meta_store.write_to_file(&dest_meta_dir) {
                 std::result::Result::Ok(_) => info!(
@@ -628,6 +798,7 @@ impl ImageClient {
                 dest_meta_dir.replace("meta_store.json", "image_file_list.json");
             let _ = image_file_list.save_to_file(&dest_file_list_path);
         }
+        return Ok(image_id.to_string());
     }
     // load the dest_meta and image layers to mem
     pub async fn load_content(&self) {

@@ -213,7 +213,7 @@ impl ImagePullService {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main(){
     let args = Cli::parse();
     let cdh_addr = &args.socket;
     let image_pull_timeout = &args.timeout * NANO_PER_SECOND;
