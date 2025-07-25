@@ -344,7 +344,7 @@ impl ImageClient {
         diff_id: &str,
         file_decoder: &str,
     ) -> Result<String> {
-        println!("guest_uncompress for file:{:?}\n",diff_id);
+        println!("guest_uncompress for file:{:?}\n", diff_id);
         let decoder = Compression::try_from(file_decoder)?;
         let destination = Path::new(&dest_path);
         let layer_reader = tokio::fs::File::open(&file_path)
@@ -397,7 +397,10 @@ impl ImageClient {
         //         return Ok("TODO".to_string());
         //     }
         // }
-        let full_image_id = self.guest_pull_content(image_url,bundle_dir).await.unwrap();
+        let full_image_id = self
+            .guest_pull_content(image_url, bundle_dir)
+            .await
+            .unwrap();
         return Ok(full_image_id);
     }
     pub async fn map_file(
@@ -439,7 +442,11 @@ impl ImageClient {
     //2.get file_trans_list from image_cvm
     //3.get meta.json from image_cvm
     //4.get layers from image_cvm
-    pub async fn guest_pull_content(&mut self, image_url: &str,bundle_dir:&Path) -> Result<String> {
+    pub async fn guest_pull_content(
+        &mut self,
+        image_url: &str,
+        bundle_dir: &Path,
+    ) -> Result<String> {
         //获取句柄
         let file = OpenOptions::new()
             .read(true)
@@ -487,7 +494,7 @@ impl ImageClient {
                 return Err(anyhow!("Failed to convert C string"));
             }
         };
-        let full_image_id=["sha256:",&dest_image_id].concat();
+        let full_image_id = ["sha256:", &dest_image_id].concat();
         println!("dest_image_id={:?}\n", &dest_image_id);
         //构建目标cvm中的image_file_list.json路径
         let host_file_list_path = [
@@ -502,11 +509,11 @@ impl ImageClient {
             .await
             .map(|v| println!("{:?}", v))?;
         //读取json文件获取信息
-        let file_list: ImageFileList = match ImageFileList::from_file(&guest_file_list_path){
+        let file_list: ImageFileList = match ImageFileList::from_file(&guest_file_list_path) {
             std::result::Result::Ok(result) => {
                 println!("load ImageFileList");
                 result
-            },
+            }
             Err(e) => {
                 eprintln!("fail to load ImageFileList: {}", e);
                 ImageFileList::new()
@@ -525,11 +532,11 @@ impl ImageClient {
                 .await
                 .map(|v| println!("{:?}", v))?;
         }
-        self.map_file(&file,&file_list.host_meta_path,&file_list.guest_meta_path)
-                .await
-                .map(|v| println!("{:?}", v))?;
+        self.map_file(&file, &file_list.host_meta_path, &file_list.guest_meta_path)
+            .await
+            .map(|v| println!("{:?}", v))?;
         //根据信息依次加载压缩之后的镜像层=>{file_list.guest_layer_paths}中的文件
-        for guest_layer_path in file_list.guest_layer_paths.iter() { 
+        for guest_layer_path in file_list.guest_layer_paths.iter() {
             // println!(
             //     "uncompress for guest_layer_path={:?}\n
             //     to {:?}\n",
@@ -542,13 +549,21 @@ impl ImageClient {
                 &guest_layer_path.replace(".compress", ""),
                 &full_image_id,
                 &"application/vnd.oci.image.layer.v1.tar+gzip".to_string(),
-            ).await.map(|v| println!("{:?}", v))?;
+            )
+            .await
+            .map(|v| println!("{:?}", v))?;
         }
         //创建bundle目录
         let map_dir = ["/tmp/", &dest_image_id].concat();
-        println!("map_dir={:?}\nbundle_dir={:?}",&map_dir,&bundle_dir.display());
+        println!(
+            "map_dir={:?}\nbundle_dir={:?}",
+            &map_dir,
+            &bundle_dir.display()
+        );
         let map_path = Path::new(&map_dir);
-        let map_result = self.create_map_bundle(bundle_dir, &map_path, full_image_id.to_string()).await;
+        let map_result = self
+            .create_map_bundle(bundle_dir, &map_path, full_image_id.to_string())
+            .await;
         match map_result {
             std::result::Result::Ok(result) => {
                 info!(
@@ -563,11 +578,9 @@ impl ImageClient {
             std::result::Result::Err(_err) => {
                 info!("[create_map_bundle] create_map_bundle failed={}", _err);
                 let _ = nix::unistd::close(fd);
-                return Ok(full_image_id.to_string());
+                return Err(anyhow!(full_image_id.to_string()));
             }
         }
-
-
     }
     // guest-fn:create bundle from the image in map mem.
     // map_dir must be /tmp/image_id/
@@ -594,20 +607,20 @@ impl ImageClient {
             }
         };
         //get image_db from map_dir/meta_store.json
-        let meta_store = Arc::new(RwLock::new(
-            MetaStore::try_from(map_dir.join(METAFILE).as_path())?
-        ));
+        let meta_store = Arc::new(RwLock::new(MetaStore::try_from(
+            map_dir.join(METAFILE).as_path(),
+        )?));
 
         let m = meta_store.read().await;
         let image_db = &m.image_db;
-        println!("[create_map_bundle] image_db:{:?}\n",&m.image_db);
-        println!("[create_map_bundle] image_id:{:?}\n",&image_id);
+        println!("[create_map_bundle] image_db:{:?}\n", &m.image_db);
+        println!("[create_map_bundle] image_id:{:?}\n", &image_id);
         //image_db only have dest ImageMeta,so don't need id to get image_data
         let dest_image_meta: &ImageMeta = image_db
-                .iter()
-                .find(|(_, meta)| image_id == meta.id)
-                .map(|(_, meta)| meta)
-                .expect("Image not found in meta store");
+            .iter()
+            .find(|(_, meta)| image_id == meta.id)
+            .map(|(_, meta)| meta)
+            .expect("Image not found in meta store");
         return create_bundle(dest_image_meta, bundle_dir, snapshot);
         // if let Some(image_data) = &m.image_db.get(&image_id) {
         //     println!("image_id:{:?}\nimage_data.id:{:?}",&image_id,&image_data.id);
