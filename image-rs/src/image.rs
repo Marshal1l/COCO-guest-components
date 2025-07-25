@@ -270,7 +270,7 @@ impl Default for ImageClient {
 
 impl ImageClient {
     //tool
-    pub fn create_parent_dirs(&self, file_path: &str)->Result<String> {
+    pub fn create_parent_dirs(&self, file_path: &str) -> Result<String> {
         let path = Path::new(file_path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -338,11 +338,13 @@ impl ImageClient {
     // file_decoder:uncompressed||Gzip||Zstd
     // diff_id:the layer's diff_id
     pub async fn guest_uncompress(
+        &self,
         file_path: &str,
         dest_path: &str,
         diff_id: &str,
         file_decoder: &str,
     ) -> Result<String> {
+        println!("guest_uncompress for file:{:?}\n",diff_id);
         let decoder = Compression::try_from(file_decoder)?;
         let destination = Path::new(&dest_path);
         let layer_reader = tokio::fs::File::open(&file_path)
@@ -395,8 +397,8 @@ impl ImageClient {
         //         return Ok("TODO".to_string());
         //     }
         // }
-        let _ = self.guest_pull_content(image_url).await;
-        return Ok("TODO".to_string());
+        let full_image_id = self.guest_pull_content(image_url,bundle_dir).await.unwrap();
+        return Ok(full_image_id);
     }
     pub async fn map_file(
         &self,
@@ -437,12 +439,12 @@ impl ImageClient {
     //2.get file_trans_list from image_cvm
     //3.get meta.json from image_cvm
     //4.get layers from image_cvm
-    pub async fn guest_pull_content(&mut self, image_url: &str) -> Result<String> {
+    pub async fn guest_pull_content(&mut self, image_url: &str,bundle_dir:&Path) -> Result<String> {
         //获取句柄
         let file = OpenOptions::new()
             .read(true)
             .write(true)
-            .open("/dev/rsi_ioctl")?;
+            .open("/dev/rsi-ioctl")?;
         let fd = file.as_raw_fd();
         //调用image_id pull_content
         let image_path = CString::new(image_url)?.into_bytes_with_nul();
@@ -485,7 +487,8 @@ impl ImageClient {
                 return Err(anyhow!("Failed to convert C string"));
             }
         };
-        println!("dest_image_id={:?}\n", dest_image_id);
+        let full_image_id=["sha256:",&dest_image_id].concat();
+        println!("dest_image_id={:?}\n", &dest_image_id);
         //构建目标cvm中的image_file_list.json路径
         let host_file_list_path = [
             "/tmp/run/image-rs/metas/",
@@ -499,11 +502,72 @@ impl ImageClient {
             .await
             .map(|v| println!("{:?}", v))?;
         //读取json文件获取信息
-        //根据信息依次加载压缩之后的镜像层
-        //解压镜像层
+        let file_list: ImageFileList = match ImageFileList::from_file(&guest_file_list_path){
+            std::result::Result::Ok(result) => {
+                println!("load ImageFileList");
+                result
+            },
+            Err(e) => {
+                eprintln!("fail to load ImageFileList: {}", e);
+                ImageFileList::new()
+            }
+        };
+        for (host_layer_path, guest_layer_path) in file_list
+            .image_layer_paths
+            .iter()
+            .zip(file_list.guest_layer_paths.iter())
+        {
+            println!(
+                "host_layer_path={:?}\nguest_layer_path={:?}\n",
+                host_layer_path, guest_layer_path
+            );
+            self.map_file(&file, host_layer_path, guest_layer_path)
+                .await
+                .map(|v| println!("{:?}", v))?;
+        }
+        self.map_file(&file,&file_list.host_meta_path,&file_list.guest_meta_path)
+                .await
+                .map(|v| println!("{:?}", v))?;
+        //根据信息依次加载压缩之后的镜像层=>{file_list.guest_layer_paths}中的文件
+        for guest_layer_path in file_list.guest_layer_paths.iter() { 
+            // println!(
+            //     "uncompress for guest_layer_path={:?}\n
+            //     to {:?}\n",
+            //      guest_layer_path,guest_layer_path.replace(".compress", ""),
+            // );
+
+            //解压镜像层
+            self.guest_uncompress(
+                guest_layer_path,
+                &guest_layer_path.replace(".compress", ""),
+                &full_image_id,
+                &"application/vnd.oci.image.layer.v1.tar+gzip".to_string(),
+            ).await.map(|v| println!("{:?}", v))?;
+        }
         //创建bundle目录
-        let _ = nix::unistd::close(fd);
-        return Ok("TODO".to_string());
+        let map_dir = ["/tmp/", &dest_image_id].concat();
+        println!("map_dir={:?}\nbundle_dir={:?}",&map_dir,&bundle_dir.display());
+        let map_path = Path::new(&map_dir);
+        let map_result = self.create_map_bundle(bundle_dir, &map_path, full_image_id.to_string()).await;
+        match map_result {
+            std::result::Result::Ok(result) => {
+                info!(
+                    "[create_map_bundle] create_map_bundle successfully={}",
+                    result
+                );
+                //关闭rsi设备描述符
+                let _ = nix::unistd::close(fd);
+                return Ok(full_image_id.to_string());
+            }
+            //already have the image
+            std::result::Result::Err(_err) => {
+                info!("[create_map_bundle] create_map_bundle failed={}", _err);
+                let _ = nix::unistd::close(fd);
+                return Ok(full_image_id.to_string());
+            }
+        }
+
+
     }
     // guest-fn:create bundle from the image in map mem.
     // map_dir must be /tmp/image_id/
@@ -531,18 +595,29 @@ impl ImageClient {
         };
         //get image_db from map_dir/meta_store.json
         let meta_store = Arc::new(RwLock::new(
-            MetaStore::try_from(map_dir.join(METAFILE).as_path()).unwrap_or_default(),
+            MetaStore::try_from(map_dir.join(METAFILE).as_path())?
         ));
 
         let m = meta_store.read().await;
+        let image_db = &m.image_db;
+        println!("[create_map_bundle] image_db:{:?}\n",&m.image_db);
+        println!("[create_map_bundle] image_id:{:?}\n",&image_id);
         //image_db only have dest ImageMeta,so don't need id to get image_data
-        if let Some(image_data) = &m.image_db.get(&image_id) {
-            if image_id == image_data.id {
-                return create_bundle(image_data, bundle_dir, snapshot);
-            }
-            return Err(Error::msg(("error create_map_bundle").to_string()));
-        }
-        return Err(Error::msg(("error create_map_bundle").to_string()));
+        let dest_image_meta: &ImageMeta = image_db
+                .iter()
+                .find(|(_, meta)| image_id == meta.id)
+                .map(|(_, meta)| meta)
+                .expect("Image not found in meta store");
+        return create_bundle(dest_image_meta, bundle_dir, snapshot);
+        // if let Some(image_data) = &m.image_db.get(&image_id) {
+        //     println!("image_id:{:?}\nimage_data.id:{:?}",&image_id,&image_data.id);
+        //     if image_id == image_data.id {
+        //         println!("create_map_bundle enter create_bundle!/n");
+        //         return create_bundle(image_data, bundle_dir, snapshot);
+        //     }
+        //     return Err(Error::msg(("error create_map_bundle=>couldn's find image").to_string()));
+        // }
+        // return Err(Error::msg(("error create_map_bundle").to_string()));
     }
     //image-fn:
     //pull_image_content:pull image, signature validate,decrypt and uncompress
@@ -703,7 +778,7 @@ impl ImageClient {
             std::result::Result::Ok(result) => {
                 info!("[pull content]:image_id={}", &result);
                 //use image_id find image meta from meta_store.json
-                self.create_dest_meta(image_url,result.clone()).await;
+                self.create_dest_meta(image_url, result.clone()).await;
                 return Ok(result.to_string());
             }
             //already have the image
@@ -712,10 +787,10 @@ impl ImageClient {
             }
         }
     }
-    pub async fn create_dest_meta(&self,image_url:&str, image_id: String)->Result<String> {
+    pub async fn create_dest_meta(&self, image_url: &str, image_id: String) -> Result<String> {
         //store the image_id into file named image_url
-        let image_name=&image_url.split('/').last().unwrap_or(image_url);
-        let store_image_id_str=[DEFAULT_WORK_DIR, "metas/",&image_name].concat();
+        let image_name = &image_url.split('/').last().unwrap_or(image_url);
+        let store_image_id_str = [DEFAULT_WORK_DIR, "metas/", &image_name].concat();
         let store_image_id_path = Path::new(&store_image_id_str);
         if let Some(parent_image_id) = store_image_id_path.parent() {
             // 如果目录不存在，创建目录
@@ -723,7 +798,7 @@ impl ImageClient {
         }
         // 创建或打开文件并写入 JSON 数据
         let mut file_image_id = File::create(store_image_id_path)?;
-        file_image_id.write_all(&image_id.replace("sha256:","").as_bytes())?;
+        file_image_id.write_all(&image_id.replace("sha256:", "").as_bytes())?;
         file_image_id.flush()?;
         //
         let mut image_file_list = ImageFileList::new();
@@ -781,7 +856,9 @@ impl ImageClient {
             }
             //6.save the image_meta to workdir/metas/image_id/meta_store.json
             let mut dest_meta_store = MetaStore::default();
-            dest_meta_store.image_db.insert(image_id.clone(), dest_file_meta);
+            dest_meta_store
+                .image_db
+                .insert(image_id.clone(), dest_file_meta);
             //add layers_store
             match dest_meta_store.write_to_file(&dest_meta_dir) {
                 std::result::Result::Ok(_) => info!(
