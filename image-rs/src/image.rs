@@ -254,7 +254,7 @@ pub struct ImageClient {
     pub(crate) snapshots: HashMap<SnapshotType, Box<dyn Snapshotter>>,
 
     /// The config
-    pub(crate) config: ImageConfig,
+    pub config: ImageConfig,
 
     /// The image layer store
     pub(crate) layer_store: LayerStore,
