@@ -5,10 +5,10 @@
 
 //! This mod implements aes-256-gcm encryption & decryption.
 
-use anyhow::*;
-use openssl::symm::Cipher;
-
 use crate::AeadCipher;
+use anyhow::*;
+use log::info;
+use openssl::symm::Cipher;
 
 const TAG_LENGTH: usize = 16;
 
@@ -42,7 +42,8 @@ pub fn decrypt(key: &[u8], encrypted_data: &[u8], iv: &[u8]) -> Result<Vec<u8>> 
     if encrypted_data.len() < TAG_LENGTH {
         bail!("Illegal length of ciphertext");
     }
-
+    info!("The length of the key: {}", key.len());
+    info!("Key bytes (hex): {:02x?}", key);
     let (data, tag) = encrypted_data.split_at(encrypted_data.len() - TAG_LENGTH);
     openssl::symm::decrypt_aead(cipher, key, Some(iv), &[], data, tag)
         .map_err(|e| anyhow!(e.to_string()))

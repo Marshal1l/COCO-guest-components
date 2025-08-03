@@ -1411,6 +1411,7 @@ dependencies = [
  "concat-kdf",
  "ctr",
  "kbs-types",
+ "log",
  "openssl",
  "p256",
  "rand 0.8.5",
