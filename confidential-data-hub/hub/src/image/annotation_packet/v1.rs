@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-use resource_uri::ResourceUri;
-use serde::{Deserialize, Serialize};
-
 use crate::image::{Error, Result};
 
+use log::info;
+use resource_uri::ResourceUri;
+use serde::{Deserialize, Serialize};
 /// `AnnotationPacket` is what a encrypted image layer's
 /// `org.opencontainers.image.enc.keys.provider.attestation-agent`
 /// annotation should contain when it is encrypted by CoCo's
@@ -40,6 +40,7 @@ impl AnnotationPacket {
                 source: e,
             })?;
         let name = self.kid.whole_uri();
+        info!("name={:#?}", name);
         let kek = kbs_client
             .get_secret(&name, &Annotations::default())
             .await
@@ -47,7 +48,7 @@ impl AnnotationPacket {
                 context: "get KEK failed",
                 source: e,
             })?;
-
+        info!("kek={:#?}", kek);
         let lek = crypto::decrypt(
             kek.into(),
             STANDARD
@@ -65,7 +66,7 @@ impl AnnotationPacket {
             wrap_type,
         )
         .map_err(|e| Error::DecryptFailed { source: e })?;
-
+        info!("lek={:#?}", lek);
         Ok(lek)
     }
 }

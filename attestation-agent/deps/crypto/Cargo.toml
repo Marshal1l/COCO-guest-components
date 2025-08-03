@@ -17,7 +17,7 @@ kbs-types.workspace = true
 openssl = { workspace = true, features = ["vendored"], optional = true }
 p256 = { version = "0.13.1", features = ["ecdh", "pem"], optional = true }
 rand.workspace = true
-
+log = "0.4.27"
 # This is for API compability of p256 who is using the old version of `rand`
 rand_08 = { package = "rand", version = "0.8", optional = true }
 rsa = { workspace = true, optional = true }
