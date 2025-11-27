@@ -6,26 +6,13 @@ edition = "2021"
 license = "Apache-2.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "vsock-ttrpc-server"
+required-features = ["bin", "ttrpc"]
 
 [[bin]]
 name = "ttrpc-cdh"
 required-features = ["bin", "ttrpc"]
-
-[[bin]]
-name = "grpc-cdh"
-required-features = ["bin", "grpc"]
-
-[[bin]]
-name = "ttrpc-cdh-tool"
-required-features = ["bin", "ttrpc"]
-
-[[bin]]
-name = "grpc-cdh-tool"
-required-features = ["bin", "grpc"]
-
-[[bin]]
-name = "cdh-oneshot"
-required-features = ["bin"]
 
 [[bin]]
 name = "secret"
@@ -33,6 +20,10 @@ path = "src/bin/secret_cli.rs"
 required-features = ["cli"]
 
 [dependencies]
+futures = "0.3"
+libc = "0.2"
+bincode = "1.3"
+tokio-vsock = "0.7.2"
 anyhow = { workspace = true, optional = true }
 async-trait.workspace = true
 attestation-agent = { path = "../../attestation-agent/attestation-agent", default-features = false, optional = true }
@@ -97,7 +88,7 @@ ehsm = []
 
 # Binary RPC type
 bin = [ "anyhow", "attestation-agent", "clap", "config", "env_logger", "serde" ]
-ttrpc = ["dep:ttrpc", "protobuf", "ttrpc-codegen", "tokio/signal"]
+ttrpc = ["dep:ttrpc", "protobuf", "ttrpc-codegen", "tokio/signal","tonic-build"]
 grpc = ["prost", "tonic", "tonic-build", "tokio/signal"]
 
 # for secret_cli

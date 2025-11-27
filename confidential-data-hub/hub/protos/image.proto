@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package image;
+
+service Greeter {
+  rpc say_hello(RpcRequest) returns (RpcResponse);
+  rpc get_file(GetFileRpcRequest) returns (GetFileResponse);
+}
+
+message RpcRequest { string content = 1; }
+
+message RpcResponse { string content = 1; }
+
+message GetFileRpcRequest {
+  uint64 rd_addr = 1;
+  uint64 ipa_start = 2;
+  uint64 ipa_size = 3;
+  string file_path = 4;
+}
+
+message GetFileResponse { uint64 size = 1; }

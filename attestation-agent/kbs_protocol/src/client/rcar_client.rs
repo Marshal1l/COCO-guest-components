@@ -209,13 +209,37 @@ impl KbsClient<Box<dyn EvidenceProvider>> {
         };
 
         debug!("send attest request.");
-        let attest_response = self
-            .http_client
-            .post(attest_endpoint)
-            .header("Content-Type", "application/json")
-            .json(&attest)
-            .send()
-            .await?;
+        let max_retries = 3; // 最多重试3次
+        let mut attempts = 0;
+
+        let attest_response = loop {
+            attempts += 1;
+
+            let result = self
+                .http_client
+                .post(&attest_endpoint)
+                .header("Content-Type", "application/json")
+                .json(&attest)
+                .send()
+                .await;
+
+            match result {
+                Ok(response) => {
+                    break Ok(response); 
+                }
+                Err(e) => {
+                    if e.is_connect() || e.is_request() {
+                        eprintln!("request error (attempt {}/{}), Error: {:?}, retrying...", attempts, max_retries, e);
+                        if attempts >= max_retries {
+                            break Err(e);
+                        }
+                    } else {
+                        eprintln!("request error: {:?}", e);
+                        break Err(e);
+                    }
+                }
+            }
+        }?;
 
         match attest_response.status() {
             reqwest::StatusCode::OK => {
