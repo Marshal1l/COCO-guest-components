@@ -35,47 +35,9 @@ use nix::libc::{c_char, ioctl};
 use std::ffi::CString;
 use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
-//ioctl
-macro_rules! ior {
-    ($ty:expr, $nr:expr, $size:expr) => {
-        (($ty << 8) | $nr) as i32
-    };
-}
+//vsock client
+use crate::vsock_ttrpc_client::VsockClient;
 
-macro_rules! iowr {
-    ($ty:expr, $nr:expr, $size:expr) => {
-        ((3 << 30) | ($ty << 8) | $nr | ($size << 16)) as i32 // 修正为 3 << 30
-    };
-}
-const RSI_IOCTL_MAGIC: u8 = b'R';
-const RSI_PRINT: i32 = ior!(RSI_IOCTL_MAGIC as u32, 0, 0);
-const GET_MAP_FILE: i32 = iowr!(
-    RSI_IOCTL_MAGIC as u32,
-    2,
-    std::mem::size_of::<MapFile>() as u32
-);
-const PULL_CONTENT: i32 = iowr!(
-    RSI_IOCTL_MAGIC as u32,
-    3,
-    std::mem::size_of::<ContentUrl>() as u32
-);
-const GET_IMAGE_ID: i32 = iowr!(
-    RSI_IOCTL_MAGIC as u32,
-    4,
-    std::mem::size_of::<ImageId>() as u32
-);
-#[repr(C)]
-#[derive(Debug)]
-struct MapFile {
-    host_file_path: [c_char; 128],
-    guest_file_path: [c_char; 128],
-}
-struct ContentUrl {
-    image_url: [c_char; 128],
-}
-struct ImageId {
-    id: [c_char; 128],
-}
 //
 #[cfg(feature = "snapshot-unionfs")]
 use crate::snapshots::occlum::unionfs::Unionfs;
@@ -364,78 +326,11 @@ impl ImageClient {
         auth_info: &Option<&str>,
         decrypt_config: &Option<&str>,
     ) -> Result<String> {
-        //assume guest cvm call image cvm
-        //map to mem on /tmp/image_id
-        //return image_id:String
-        //1.run guest_pull_content first
-        //2.then invoke guest_uncompress
-        //3.finally create_map_bundle
-        //return
-        // let image_id =
-        //     "sha256:ff7a7936e9306ce4a789cf5523922da5e585dc1216e400efb3b6872a5137ee6b".to_string();
-        // let nosha_id = &image_id.replace("sha256:", "");
-        // let map_dir = ["/tmp/", &nosha_id].concat();
-        // let map_path = Path::new(&map_dir);
-        // info!(
-        //     "[guest_pull_image] start guest pull \nbundle_dir={}\nimage_id={}\nmap_dir={}",
-        //     &bundle_dir.display(),
-        //     image_id,
-        //     map_dir
-        // );
-        // let map_result = self.create_map_bundle(bundle_dir, map_path, image_id).await;
-        // match map_result {
-        //     std::result::Result::Ok(result) => {
-        //         info!(
-        //             "[create_map_bundle] create_map_bundle successfully={}",
-        //             result
-        //         );
-        //         return Ok("TODO".to_string());
-        //     }
-        //     //already have the image
-        //     std::result::Result::Err(_err) => {
-        //         info!("[create_map_bundle] create_map_bundle failed={}", _err);
-        //         return Ok("TODO".to_string());
-        //     }
-        // }
         let full_image_id = self
             .guest_pull_content(image_url, bundle_dir)
             .await
             .unwrap();
         return Ok(full_image_id);
-    }
-    pub async fn map_file(
-        &self,
-        rsi_file: &File,
-        host_file_path: &str,
-        guest_file_path: &str,
-    ) -> Result<String> {
-        self.create_parent_dirs(guest_file_path)?;
-        let rsi_fd = rsi_file.as_raw_fd();
-        let mut map_file_list = MapFile {
-            host_file_path: [0; 128],
-            guest_file_path: [0; 128],
-        };
-        let host_file_list_path_cstring = CString::new(host_file_path)?.into_bytes_with_nul();
-        let guest_file_list_path_cstring = CString::new(guest_file_path)?.into_bytes_with_nul();
-        for (i, &byte) in host_file_list_path_cstring.iter().enumerate() {
-            if i < 128 {
-                map_file_list.host_file_path[i] = byte as c_char;
-            }
-        }
-        for (i, &byte) in guest_file_list_path_cstring.iter().enumerate() {
-            if i < 128 {
-                map_file_list.guest_file_path[i] = byte as c_char;
-            }
-        }
-        unsafe {
-            let ret = ioctl(rsi_fd, GET_MAP_FILE, &mut map_file_list as *mut MapFile);
-            if ret < 0 {
-                println!("GET_MAP_FILE, failed,TRY again\n");
-                return Err(anyhow!("Failed to GET_MAP_FILE"));
-            }
-            println!("GET_MAP_FILE, IOCTL called successfully");
-        }
-        return Ok("Successfully GET_MAP_FILE".to_string());
     }
     //guest-fn:call image_cvm to
     //1.tell the image cvm image_url and get the image_id
@@ -447,56 +342,13 @@ impl ImageClient {
         image_url: &str,
         bundle_dir: &Path,
     ) -> Result<String> {
-        //获取句柄
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/rsi-ioctl")?;
-        let fd = file.as_raw_fd();
-        //调用image_id pull_content
-        let image_path = CString::new(image_url)?.into_bytes_with_nul();
-        let mut content_url = ContentUrl {
-            image_url: [0; 128],
-        };
-        for (i, &byte) in image_path.iter().enumerate() {
-            if i < 128 {
-                content_url.image_url[i] = byte as c_char;
-            }
-        }
-        println!("image_url: {:?}", content_url.image_url);
-        unsafe {
-            let ret = ioctl(fd, PULL_CONTENT, &mut content_url as *mut ContentUrl);
-            if ret < 0 {
-                println!("PULL_CONTENT, failed\n");
-                return Ok("TODO".to_string());
-            }
-            println!("PULL_CONTENT, IOCTL called successfully");
-        }
-        //获取image_id
-        let mut image_id = ImageId { id: [0; 128] };
-        unsafe {
-            let mut ret: i32 = -1;
-            while ret != 0 {
-                ret = ioctl(fd, GET_IMAGE_ID, &mut image_id as *mut ImageId);
-                if ret < 0 {
-                    println!("GET_IMAGE_ID, failed,TRY again\n");
-                }
-            }
-            println!("GET_IMAGE_ID, IOCTL called successfully");
-        }
-        println!("GOT THE IMAGE_ID:{:?}\n", image_id.id);
-        //将image_id转化成rust的字符串类型
-        let c_str = unsafe { CStr::from_ptr(image_id.id.as_ptr()) };
-        let dest_image_id = match c_str.to_str().map(|s| s.to_string()) {
-            std::result::Result::Ok(s) => s,
-            Err(e) => {
-                println!("error:{:?}\n", e);
-                return Err(anyhow!("Failed to convert C string"));
-            }
-        };
+        let mut vsock_client = VsockClient::new().await?;
+        //1.TODO发送请求向image-cvm通过image_url让其拉取镜像，通过返回值获取image_id
+        let dest_image_id = vsock_client.say_hello(image_url).await?;
+        //2.加上前缀sha256:
         let full_image_id = ["sha256:", &dest_image_id].concat();
         println!("dest_image_id={:?}\n", &dest_image_id);
-        //构建目标cvm中的image_file_list.json路径
+        //3.构建目标cvm中的image_file_list.json路径
         let host_file_list_path = [
             "/tmp/run/image-rs/metas/",
             &dest_image_id,
@@ -504,11 +356,14 @@ impl ImageClient {
         ]
         .concat();
         let guest_file_list_path = ["/tmp/", &dest_image_id, "/image_file_list.json"].concat();
-        //映射image_file_list.json
-        self.map_file(&file, &host_file_list_path, &guest_file_list_path)
-            .await
-            .map(|v| println!("{:?}", v))?;
-        //读取json文件获取信息
+        //4.TODO映射image_file_list.json，从host_file_list_path到guest_file_list_path
+        vsock_client
+            .get_file(
+                PathBuf::from(&guest_file_list_path),
+                PathBuf::from(&host_file_list_path),
+            )
+            .await?;
+        //5.读取json文件获取信息
         let file_list: ImageFileList = match ImageFileList::from_file(&guest_file_list_path) {
             std::result::Result::Ok(result) => {
                 println!("load ImageFileList");
@@ -519,30 +374,32 @@ impl ImageClient {
                 ImageFileList::new()
             }
         };
+        //6.TODO映射layer，从host_layer_path到guest_layer_path
         for (host_layer_path, guest_layer_path) in file_list
             .image_layer_paths
             .iter()
             .zip(file_list.guest_layer_paths.iter())
         {
+            vsock_client
+                .get_file(
+                    PathBuf::from(&guest_layer_path),
+                    PathBuf::from(&host_layer_path),
+                )
+                .await?;
             println!(
                 "host_layer_path={:?}\nguest_layer_path={:?}\n",
                 host_layer_path, guest_layer_path
             );
-            self.map_file(&file, host_layer_path, guest_layer_path)
-                .await
-                .map(|v| println!("{:?}", v))?;
         }
-        self.map_file(&file, &file_list.host_meta_path, &file_list.guest_meta_path)
-            .await
-            .map(|v| println!("{:?}", v))?;
-        //根据信息依次加载压缩之后的镜像层=>{file_list.guest_layer_paths}中的文件
+        //7.TODO映射meta，从file_list.host_meta_path到file_list.guest_meta_path
+        vsock_client
+            .get_file(
+                PathBuf::from(&file_list.guest_meta_path),
+                PathBuf::from(&file_list.host_meta_path),
+            )
+            .await?;
+        //8.解压layer
         for guest_layer_path in file_list.guest_layer_paths.iter() {
-            // println!(
-            //     "uncompress for guest_layer_path={:?}\n
-            //     to {:?}\n",
-            //      guest_layer_path,guest_layer_path.replace(".compress", ""),
-            // );
-
             //解压镜像层
             self.guest_uncompress(
                 guest_layer_path,
@@ -553,7 +410,7 @@ impl ImageClient {
             .await
             .map(|v| println!("{:?}", v))?;
         }
-        //创建bundle目录
+        //9.创建bundle目录
         let map_dir = ["/tmp/", &dest_image_id].concat();
         println!(
             "map_dir={:?}\nbundle_dir={:?}",
@@ -570,14 +427,11 @@ impl ImageClient {
                     "[create_map_bundle] create_map_bundle successfully={}",
                     result
                 );
-                //关闭rsi设备描述符
-                let _ = nix::unistd::close(fd);
                 return Ok(full_image_id.to_string());
             }
             //already have the image
             std::result::Result::Err(_err) => {
                 info!("[create_map_bundle] create_map_bundle failed={}", _err);
-                let _ = nix::unistd::close(fd);
                 return Err(anyhow!(full_image_id.to_string()));
             }
         }
@@ -889,13 +743,6 @@ impl ImageClient {
             let _ = image_file_list.save_to_file(&dest_file_list_path);
         }
         return Ok(image_id.to_string());
-    }
-    // load the dest_meta and image layers to mem
-    pub async fn load_content(&self) {
-        info!("[load_content]:load content to mem");
-        //load map content to mem
-        //include dest_meta and the image's image layers
-        //load content:ipa->realm's pa->this realm machine's pa should be continuous
     }
     /// pull_image pulls an image with optional auth info and decrypt config
     /// and store the pulled data under user defined work_dir/layers.

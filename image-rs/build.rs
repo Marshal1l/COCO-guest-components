@@ -23,4 +23,24 @@ fn main() {
             .run()
             .expect("ttrpc build");
     }
+
+    #[cfg(feature = "tonic-build")]
+    tonic_build::compile_protos("./protos/image.proto").expect("tonic build");
+
+    #[cfg(feature = "ttrpc-codegen")]
+    {
+        println!("cargo::rerun-if-changed=./protos/image.proto");
+        ttrpc_codegen::Codegen::new()
+            .out_dir("./src/resource/kbs/ttrpc_proto")
+            .input("./protos/image.proto")
+            .include("./protos")
+            .rust_protobuf()
+            .customize(ttrpc_codegen::Customize {
+                async_all: true,
+                ..Default::default()
+            })
+            .rust_protobuf_customize(ttrpc_codegen::ProtobufCustomize::default().gen_mod_rs(false))
+            .run()
+            .expect("ttrpc build");
+    }
 }
