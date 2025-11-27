@@ -25,3 +25,4 @@ pub mod stream;
 pub mod unpack;
 #[cfg(feature = "verity")]
 pub mod verity;
+pub mod vsock_ttrpc_client;
