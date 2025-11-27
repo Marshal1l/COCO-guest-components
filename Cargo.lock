@@ -394,7 +394,7 @@ dependencies = [
  "tokio",
  "toml 0.8.22",
  "tonic",
- "tonic-build",
+ "tonic-build 0.12.3",
  "ttrpc",
  "ttrpc-codegen",
 ]
@@ -1112,7 +1112,7 @@ dependencies = [
  "strum",
  "tokio",
  "tonic",
- "tonic-build",
+ "tonic-build 0.12.3",
  "uuid",
 ]
 
@@ -1157,13 +1157,16 @@ dependencies = [
  "async-trait",
  "attestation-agent",
  "base64 0.22.1",
+ "bincode",
  "cfg-if",
  "clap 4.2.7",
  "config",
  "crypto",
  "env_logger 0.11.8",
+ "futures",
  "image-rs",
  "kms",
+ "libc",
  "log",
  "nix 0.29.0",
  "prost 0.13.5",
@@ -1178,8 +1181,9 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.12",
  "tokio",
+ "tokio-vsock 0.7.2",
  "tonic",
- "tonic-build",
+ "tonic-build 0.12.3",
  "ttrpc",
  "ttrpc-codegen",
  "zeroize",
@@ -2834,12 +2838,13 @@ dependencies = [
 
 [[package]]
 name = "hyper-util"
-version = "0.1.11"
+version = "0.1.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "497bbc33a26fdd4af9ed9c70d63f61cf56a938375fbb32df34db9b1cd6d643f2"
+checksum = "3c6995591a8f1380fcb4ba966a252a4b29188d51d2b89e3a252f5305be65aea8"
 dependencies = [
  "bytes",
  "futures-channel",
+ "futures-core",
  "futures-util",
  "http 1.3.1",
  "http-body 1.0.1",
@@ -3039,6 +3044,7 @@ dependencies = [
  "async-compression",
  "async-trait",
  "base64 0.22.1",
+ "bincode",
  "cfg-if",
  "devicemapper",
  "dircpy",
@@ -3048,7 +3054,9 @@ dependencies = [
  "futures",
  "futures-util",
  "hex",
+ "hyper-util",
  "kbc",
+ "libc",
  "log",
  "loopdev",
  "nix 0.29.0",
@@ -3076,8 +3084,11 @@ dependencies = [
  "test-utils",
  "tokio",
  "tokio-util",
+ "tokio-vsock 0.7.2",
  "tonic",
- "tonic-build",
+ "tonic-build 0.12.3",
+ "tonic-prost-build",
+ "tower 0.5.2",
  "ttrpc",
  "ttrpc-codegen",
  "url",
@@ -3425,7 +3436,7 @@ dependencies = [
  "strum",
  "tokio",
  "tonic",
- "tonic-build",
+ "tonic-build 0.12.3",
  "url",
  "uuid",
  "zeroize",
@@ -3516,7 +3527,7 @@ dependencies = [
  "tokio",
  "toml 0.8.22",
  "tonic",
- "tonic-build",
+ "tonic-build 0.12.3",
  "url",
  "uuid",
  "yasna 0.5.2",
@@ -3959,6 +3970,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset 0.9.1",
 ]
 
 [[package]]
@@ -4281,7 +4293,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tonic",
- "tonic-build",
+ "tonic-build 0.12.3",
  "ttrpc",
  "ttrpc-codegen",
  "zeroize",
@@ -4901,6 +4913,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7231bd9b3d3d33c86b58adbac74b5ec0ad9f496b19d22801d773636feaa95f3d"
+dependencies = [
+ "bytes",
+ "prost-derive 0.14.1",
+]
+
+[[package]]
 name = "prost-build"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4939,6 +4961,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost-build"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac6c3320f9abac597dcbc668774ef006702672474aad53c6d596b62e487b40b1"
+dependencies = [
+ "heck 0.5.0",
+ "itertools 0.14.0",
+ "log",
+ "multimap 0.10.0",
+ "once_cell",
+ "petgraph 0.7.1",
+ "prettyplease",
+ "prost 0.14.1",
+ "prost-types 0.14.1",
+ "pulldown-cmark",
+ "pulldown-cmark-to-cmark",
+ "regex",
+ "syn 2.0.101",
+ "tempfile",
+]
+
+[[package]]
 name = "prost-derive"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4965,6 +5009,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost-derive"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9120690fafc389a67ba3803df527d0ec9cbbc9cc45e4cc20b332996dfb672425"
+dependencies = [
+ "anyhow",
+ "itertools 0.14.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.101",
+]
+
+[[package]]
 name = "prost-types"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4981,6 +5038,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52c2c1bf36ddb1a1c396b3601a3cec27c2462e45f07c386894ec3ccf5332bd16"
 dependencies = [
  "prost 0.13.5",
+]
+
+[[package]]
+name = "prost-types"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9b4db3d6da204ed77bb26ba83b6122a73aeb2e87e25fbf7ad2e84c4ccbf8f72"
+dependencies = [
+ "prost 0.14.1",
 ]
 
 [[package]]
@@ -5063,6 +5129,26 @@ checksum = "6f42ea446cab60335f76979ec15e12619a2165b5ae2c12166bef27d283a9fadf"
 dependencies = [
  "idna",
  "psl-types",
+]
+
+[[package]]
+name = "pulldown-cmark"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e8bbe1a966bd2f362681a44f6edce3c2310ac21e4d5067a6e7ec396297a6ea0"
+dependencies = [
+ "bitflags 2.9.0",
+ "memchr",
+ "unicase",
+]
+
+[[package]]
+name = "pulldown-cmark-to-cmark"
+version = "21.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5b6a0769a491a08b31ea5c62494a8f144ee0987d86d670a8af4df1e1b7cde75"
+dependencies = [
+ "pulldown-cmark",
 ]
 
 [[package]]
@@ -6792,7 +6878,20 @@ dependencies = [
  "futures",
  "libc",
  "tokio",
- "vsock",
+ "vsock 0.3.0",
+]
+
+[[package]]
+name = "tokio-vsock"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b319ef9394889dab2e1b4f0085b45ba11d0c79dc9d1a9d1afc057d009d0f1c7"
+dependencies = [
+ "bytes",
+ "futures",
+ "libc",
+ "tokio",
+ "vsock 0.5.1",
 ]
 
 [[package]]
@@ -6887,6 +6986,34 @@ dependencies = [
  "prost-types 0.13.5",
  "quote",
  "syn 2.0.101",
+]
+
+[[package]]
+name = "tonic-build"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c40aaccc9f9eccf2cd82ebc111adc13030d23e887244bc9cfa5d1d636049de3"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.101",
+]
+
+[[package]]
+name = "tonic-prost-build"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4a16cba4043dc3ff43fcb3f96b4c5c154c64cbd18ca8dce2ab2c6a451d058a2"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "prost-build 0.14.1",
+ "prost-types 0.14.1",
+ "quote",
+ "syn 2.0.101",
+ "tempfile",
+ "tonic-build 0.14.2",
 ]
 
 [[package]]
@@ -7025,7 +7152,7 @@ dependencies = [
  "protobuf-codegen 3.7.1",
  "thiserror 1.0.69",
  "tokio",
- "tokio-vsock",
+ "tokio-vsock 0.4.0",
  "windows-sys 0.48.0",
 ]
 
@@ -7269,6 +7396,16 @@ checksum = "4c8e1df0bf1e1b28095c24564d1b90acae64ca69b097ed73896e342fa6649c57"
 dependencies = [
  "libc",
  "nix 0.24.3",
+]
+
+[[package]]
+name = "vsock"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e8b4d00e672f147fc86a09738fadb1445bd1c0a40542378dfb82909deeee688"
+dependencies = [
+ "libc",
+ "nix 0.29.0",
 ]
 
 [[package]]

@@ -4,17 +4,34 @@
 //
 
 fn main() {
-    #[cfg(feature = "grpc")]
+    use tonic_build;
+    tonic_build::compile_protos("./protos/image.proto").expect("tonic build");
     {
-        tonic_build::configure()
-            .build_server(true)
-            .protoc_arg("--experimental_allow_proto3_optional")
-            .compile_protos(
-                &["./protos/api.proto", "./protos/keyprovider.proto"],
-                &["./protos"],
-            )
-            .expect("Generate grpc protocol code failed.");
+        println!("cargo::rerun-if-changed=./protos/image.proto");
+        ttrpc_codegen::Codegen::new()
+            .out_dir("src/bin/protos")
+            .input("./protos/image.proto")
+            .include("./protos")
+            .rust_protobuf()
+            .customize(ttrpc_codegen::Customize {
+                async_all: true,
+                ..Default::default()
+            })
+            .rust_protobuf_customize(ttrpc_codegen::ProtobufCustomize::default().gen_mod_rs(false))
+            .run()
+            .expect("ttrpc build");
     }
+    // #[cfg(feature = "grpc")]
+    // {
+    //     tonic_build::configure()
+    //         .build_server(true)
+    //         .protoc_arg("--experimental_allow_proto3_optional")
+    //         .compile_protos(
+    //             &["./protos/api.proto", "./protos/keyprovider.proto"],
+    //             &["./protos"],
+    //         )
+    //         .expect("Generate grpc protocol code failed.");
+    // }
 
     #[cfg(feature = "ttrpc")]
     {

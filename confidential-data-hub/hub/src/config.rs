@@ -91,7 +91,7 @@ impl CdhConfig {
             }
         };
 
-        config.extend_credentials_from_kernel_cmdline()?;
+        //config.extend_credentials_from_kernel_cmdline()?;
         Ok(config)
     }
 
