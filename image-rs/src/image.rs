@@ -499,7 +499,7 @@ impl ImageClient {
         auth_info: &Option<&str>,
         decrypt_config: &Option<&str>,
     ) -> Result<String> {
-        info!("pull content start------------------\n");
+        info!("pull content start MZHMZH------------------\n");
         // {
         //     info!("display_image_meta-----------\n");
         //     let m: tokio::sync::RwLockReadGuard<'_, MetaStore> = self.meta_store.read().await;
@@ -511,6 +511,13 @@ impl ImageClient {
         // 1. the input parameter
         // 2. from self.registry_auth
         // 3. use Anonymous auth
+        info!(
+            "Parsed reference: registry={:?}, repository={:?}, tag={:?}, digest={:?}",
+            reference.registry(),
+            reference.repository(),
+            reference.tag(),
+            reference.digest()
+        );
         let auth = match auth_info {
             Some(input_auth) => match input_auth.split_once(':') {
                 Some((username, password)) => {
