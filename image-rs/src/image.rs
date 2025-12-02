@@ -344,10 +344,14 @@ impl ImageClient {
     ) -> Result<String> {
         let mut vsock_client = VsockClient::new().await?;
         //1.TODO发送请求向image-cvm通过image_url让其拉取镜像，通过返回值获取image_id
-        let dest_image_id = vsock_client.say_hello(image_url).await?;
+        let mut dest_image_id = vsock_client.say_hello(image_url).await?;
         //2.加上前缀sha256:
-        let full_image_id = ["sha256:", &dest_image_id].concat();
+        let full_image_id = dest_image_id.clone();
+        if let Some(stripped) = dest_image_id.strip_prefix("sha256:") {
+            dest_image_id = stripped.to_string();
+        }
         println!("dest_image_id={:?}\n", &dest_image_id);
+        println!("full_image_id={:?}\n", &full_image_id);
         //3.构建目标cvm中的image_file_list.json路径
         let host_file_list_path = [
             "/tmp/run/image-rs/metas/",

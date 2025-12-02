@@ -15,7 +15,7 @@ use image_ioctl::RdIpaSizeData;
 pub mod image {
     tonic::include_proto!("image");
 }
-
+use std::fs;
 pub const SERVER_PORT: u32 = 54321;
 pub const SERVER_CID: u32 = 4;
 pub struct VsockClient {
@@ -96,7 +96,10 @@ impl VsockClient {
             .context("get_file RPC failed")?;
 
         let file_size = response.into_inner().size;
-
+        // create the dir of guest_file_path
+        if let Some(parent) = dst_file_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         if file_size > 0 {
             self.image_ioctl
                 .write_file(dst_file_path.clone(), file_size)
