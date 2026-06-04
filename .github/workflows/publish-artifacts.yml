@@ -37,7 +37,7 @@ jobs:
       RUST_TARGET: ${{ matrix.platform.arch }}-unknown-linux-${{ matrix.platform.libc }}
     steps:
     - name: Log in to the Container registry
-      uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+      uses: docker/login-action@0267638d8ae53966df71bb06d552129dd542dfa7
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
@@ -125,7 +125,7 @@ jobs:
       RUST_TARGET: ${{ matrix.arch }}-unknown-linux-${{ matrix.libc }}
     steps:
     - name: Log in to the Container registry
-      uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+      uses: docker/login-action@0267638d8ae53966df71bb06d552129dd542dfa7
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
