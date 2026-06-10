@@ -3,16 +3,30 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::{anyhow, bail, Context, Result};
+use log::info;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::env;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
 use walkdir::WalkDir;
 
 const ONE_MIB: u64 = 1024 * 1024;
 const EXT4_MIN_HEADROOM_MB: u64 = 8;
 const EXT4_MIN_IMAGE_SIZE_MB: u64 = 16;
+const SHARED_ROOTFS_DIR_ENV: &str = "COCO_SHARED_ROOTFS_DIR";
+const DEFAULT_SHARED_ROOTFS_DIR: &str = "/tmp/run/image-rs/shared-rootfs";
+const SHARED_ROOTFS_CACHE_DIR: &str = "cache";
+const SHARED_ROOTFS_IMAGES_DIR: &str = "images";
+const SHARED_ROOTFS_BUNDLES_DIR: &str = "bundles";
+const CACHE_FILE_SUFFIX: &str = "json";
+const PENDING_FILE_SUFFIX: &str = "pending";
+const BUNDLE_ROOTFS_DIR: &str = "rootfs";
+const BUNDLE_CONFIG_JSON: &str = "config.json";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RootfsImageFormat {
@@ -94,6 +108,21 @@ pub struct RootfsImageInfo {
     pub sha256: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SharedRootfsCacheEntry {
+    pub image_ref: String,
+    pub image_id: String,
+    pub fs_type: String,
+    pub image_size: u64,
+    pub block_size: u64,
+    pub rootfs_digest: String,
+    pub oci_config_json: Vec<u8>,
+    pub source_rd_addr: u64,
+    pub share_id: u64,
+    pub page_count: u64,
+    pub rootfs_image_path: PathBuf,
+}
+
 #[derive(Clone, Debug)]
 pub struct MountSharedRootfsOptions {
     pub image_path: PathBuf,
@@ -160,6 +189,307 @@ pub fn build_rootfs_image(options: &BuildRootfsImageOptions) -> Result<RootfsIma
         size,
         sha256,
     })
+}
+
+pub fn shared_rootfs_dir() -> PathBuf {
+    env::var_os(SHARED_ROOTFS_DIR_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_SHARED_ROOTFS_DIR))
+}
+
+pub fn shared_rootfs_images_dir() -> PathBuf {
+    shared_rootfs_dir().join(SHARED_ROOTFS_IMAGES_DIR)
+}
+
+pub fn shared_rootfs_bundles_dir() -> PathBuf {
+    shared_rootfs_dir().join(SHARED_ROOTFS_BUNDLES_DIR)
+}
+
+pub fn sanitize_path_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "image".to_string()
+    } else {
+        out
+    }
+}
+
+pub fn read_shared_rootfs_cache_entry(key: &str) -> Result<Option<SharedRootfsCacheEntry>> {
+    let path = cache_path(key, CACHE_FILE_SUFFIX);
+    let data = match fs::read(&path) {
+        Ok(data) => data,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("failed to read {}", path.display())),
+    };
+
+    let entry: SharedRootfsCacheEntry = serde_json::from_slice(&data)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    validate_shared_rootfs_cache_entry(&entry)
+        .with_context(|| format!("invalid shared rootfs cache entry {}", path.display()))?;
+
+    Ok(Some(entry))
+}
+
+pub fn write_shared_rootfs_cache_entry(entry: &SharedRootfsCacheEntry) -> Result<()> {
+    validate_shared_rootfs_cache_entry(entry)?;
+    write_cache_entry_for_key(&entry.image_ref, entry)?;
+    if entry.image_id != entry.image_ref {
+        write_cache_entry_for_key(&entry.image_id, entry)?;
+    }
+    Ok(())
+}
+
+pub fn mark_shared_rootfs_cache_pending(image_ref: &str) -> Result<()> {
+    let path = cache_path(image_ref, PENDING_FILE_SUFFIX);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, b"pending\n").with_context(|| format!("failed to write {}", path.display()))
+}
+
+pub fn clear_shared_rootfs_cache_pending(image_ref: &str) {
+    let _ = fs::remove_file(cache_path(image_ref, PENDING_FILE_SUFFIX));
+}
+
+pub fn shared_rootfs_cache_pending(image_ref: &str) -> bool {
+    cache_path(image_ref, PENDING_FILE_SUFFIX).is_file()
+}
+
+pub fn wait_for_shared_rootfs_cache_entry(
+    image_ref: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Result<Option<SharedRootfsCacheEntry>> {
+    let start = Instant::now();
+
+    loop {
+        if let Some(entry) = read_shared_rootfs_cache_entry(image_ref)? {
+            return Ok(Some(entry));
+        }
+        if !shared_rootfs_cache_pending(image_ref) {
+            return Ok(None);
+        }
+        if start.elapsed() >= timeout {
+            return Ok(None);
+        }
+        thread::sleep(poll_interval);
+    }
+}
+
+pub fn prepare_shared_rootfs_cache_from_bundle(
+    image_ref: &str,
+    image_id: &str,
+    bundle_dir: &Path,
+) -> Result<SharedRootfsCacheEntry> {
+    if let Some(entry) = read_shared_rootfs_cache_entry(image_ref)? {
+        return Ok(entry);
+    }
+    if let Some(entry) = read_shared_rootfs_cache_entry(image_id)? {
+        write_shared_rootfs_cache_entry(&entry)?;
+        return Ok(entry);
+    }
+
+    mark_shared_rootfs_cache_pending(image_ref)?;
+    let result = prepare_shared_rootfs_cache_from_bundle_inner(image_ref, image_id, bundle_dir);
+    clear_shared_rootfs_cache_pending(image_ref);
+    result
+}
+
+fn prepare_shared_rootfs_cache_from_bundle_inner(
+    image_ref: &str,
+    image_id: &str,
+    bundle_dir: &Path,
+) -> Result<SharedRootfsCacheEntry> {
+    let rootfs_dir = bundle_dir.join(BUNDLE_ROOTFS_DIR);
+    if !rootfs_dir.is_dir() {
+        bail!("bundle rootfs does not exist: {}", rootfs_dir.display());
+    }
+
+    let images_dir = shared_rootfs_images_dir();
+    fs::create_dir_all(&images_dir)
+        .with_context(|| format!("failed to create {}", images_dir.display()))?;
+
+    let safe_image_id = sanitize_path_component(image_id);
+    let build_start = Instant::now();
+    let rootfs_info =
+        prepare_shared_rootfs_image(&rootfs_dir, &images_dir, &safe_image_id, image_ref)?;
+    info!(
+        "Shared rootfs stage build_image completed: image_ref={}, path={}, fs_type={}, size={}, elapsed_ms={}",
+        image_ref,
+        rootfs_info.path.display(),
+        rootfs_info.format.as_fs_type(),
+        rootfs_info.size,
+        build_start.elapsed().as_millis()
+    );
+
+    let share_start = Instant::now();
+    let share =
+        crate::coco_image_share::create_from_file(&rootfs_info.path).with_context(|| {
+            format!(
+                "failed to create RMM share for {}",
+                rootfs_info.path.display()
+            )
+        })?;
+    info!(
+        "Shared rootfs stage create_rmm_share completed: image_ref={}, share_id={}, source_rd=0x{:x}, pages={}, elapsed_ms={}",
+        image_ref,
+        share.share_id,
+        share.source_rd_addr,
+        share.page_count,
+        share_start.elapsed().as_millis()
+    );
+    let config_json = fs::read(bundle_dir.join(BUNDLE_CONFIG_JSON)).unwrap_or_default();
+
+    let entry = SharedRootfsCacheEntry {
+        image_ref: image_ref.to_string(),
+        image_id: image_id.to_string(),
+        fs_type: rootfs_info.format.as_fs_type().to_string(),
+        image_size: rootfs_info.size,
+        block_size: 4096,
+        rootfs_digest: rootfs_info.sha256,
+        oci_config_json: config_json,
+        source_rd_addr: share.source_rd_addr,
+        share_id: share.share_id,
+        page_count: share.page_count,
+        rootfs_image_path: rootfs_info.path,
+    };
+    let cache_start = Instant::now();
+    write_shared_rootfs_cache_entry(&entry)?;
+    info!(
+        "Shared rootfs stage write_cache completed: image_ref={}, share_id={}, elapsed_ms={}",
+        image_ref,
+        entry.share_id,
+        cache_start.elapsed().as_millis()
+    );
+
+    Ok(entry)
+}
+
+pub fn prepare_shared_rootfs_image(
+    rootfs_dir: &Path,
+    images_dir: &Path,
+    safe_image_id: &str,
+    image_ref: &str,
+) -> Result<RootfsImageInfo> {
+    let mut failures = Vec::new();
+
+    for rootfs_format in rootfs_image_format_candidates() {
+        let rootfs_image_path =
+            images_dir.join(format!("{}.{}", safe_image_id, rootfs_format.as_fs_type()));
+
+        if rootfs_image_path.exists() {
+            let size = fs::metadata(&rootfs_image_path)
+                .with_context(|| format!("failed to stat {}", rootfs_image_path.display()))?
+                .len();
+            let sha256 = sha256_file(&rootfs_image_path)?;
+            return Ok(RootfsImageInfo {
+                path: rootfs_image_path,
+                format: rootfs_format,
+                size,
+                sha256,
+            });
+        }
+
+        let options = match rootfs_format {
+            RootfsImageFormat::Erofs => {
+                BuildRootfsImageOptions::erofs(rootfs_dir, &rootfs_image_path)
+            }
+            RootfsImageFormat::Squashfs => {
+                BuildRootfsImageOptions::squashfs(rootfs_dir, &rootfs_image_path)
+            }
+            RootfsImageFormat::Ext4 => {
+                BuildRootfsImageOptions::ext4(rootfs_dir, &rootfs_image_path)
+            }
+        };
+
+        match build_rootfs_image(&options) {
+            Ok(info) => return Ok(info),
+            Err(err) => failures.push(format!("{}: {:#}", rootfs_format.as_fs_type(), err)),
+        }
+    }
+
+    bail!(
+        "failed to build shared rootfs for {}; attempted formats: {}",
+        image_ref,
+        failures.join("; ")
+    )
+}
+
+fn validate_shared_rootfs_cache_entry(entry: &SharedRootfsCacheEntry) -> Result<()> {
+    if entry.image_ref.is_empty() {
+        bail!("shared rootfs cache entry has empty image_ref");
+    }
+    if entry.image_id.is_empty() {
+        bail!("shared rootfs cache entry has empty image_id");
+    }
+    if entry.share_id == 0 || entry.source_rd_addr == 0 {
+        bail!(
+            "shared rootfs cache entry has invalid RMM descriptor: share_id={} source_rd=0x{:x}",
+            entry.share_id,
+            entry.source_rd_addr
+        );
+    }
+    if entry.image_size == 0 || entry.page_count == 0 {
+        bail!(
+            "shared rootfs cache entry has invalid image size/pages: size={} pages={}",
+            entry.image_size,
+            entry.page_count
+        );
+    }
+    if !entry.rootfs_image_path.is_file() {
+        bail!(
+            "shared rootfs image does not exist: {}",
+            entry.rootfs_image_path.display()
+        );
+    }
+    if fs::metadata(&entry.rootfs_image_path)
+        .with_context(|| format!("failed to stat {}", entry.rootfs_image_path.display()))?
+        .len()
+        != entry.image_size
+    {
+        bail!(
+            "shared rootfs image size changed: {}",
+            entry.rootfs_image_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn write_cache_entry_for_key(key: &str, entry: &SharedRootfsCacheEntry) -> Result<()> {
+    let path = cache_path(key, CACHE_FILE_SUFFIX);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let tmp_path = path.with_extension(format!("{CACHE_FILE_SUFFIX}.tmp"));
+    let data = serde_json::to_vec(entry)?;
+    fs::write(&tmp_path, data)
+        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+    fs::rename(&tmp_path, &path).with_context(|| {
+        format!(
+            "failed to rename {} to {}",
+            tmp_path.display(),
+            path.display()
+        )
+    })?;
+
+    Ok(())
+}
+
+fn cache_path(key: &str, suffix: &str) -> PathBuf {
+    shared_rootfs_dir()
+        .join(SHARED_ROOTFS_CACHE_DIR)
+        .join(format!("{}.{}", sanitize_path_component(key), suffix))
 }
 
 pub fn mount_shared_rootfs_image(

@@ -29,6 +29,7 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 //vsock client
 use crate::vsock_ttrpc_client::VsockClient;
@@ -199,10 +200,17 @@ impl ImageClient {
         bundle_dir: &Path,
     ) -> Result<String> {
         let mut vsock_client = VsockClient::new().await?;
+        let prepare_start = Instant::now();
         let prepared = vsock_client
             .prepare_rootfs(image_url)
             .await
             .context("failed to prepare shared rootfs in image CVM")?;
+        info!(
+            "Runtime shared rootfs stage prepare_rootfs_rpc completed: image_ref={}, share_id={}, elapsed_ms={}",
+            image_url,
+            prepared.share_id,
+            prepare_start.elapsed().as_millis()
+        );
 
         fs::create_dir_all(bundle_dir)
             .with_context(|| format!("failed to create bundle dir {}", bundle_dir.display()))?;
@@ -222,10 +230,12 @@ impl ImageClient {
             image_size: prepared.image_size,
             page_count: prepared.page_count,
         };
+        let mount_start = Instant::now();
         mount_prepared_shared_rootfs_fast_path(shared_image, bundle_dir, &prepared.fs_type)?;
         info!(
-            "Mounted shared rootfs through RMM fast path: share_id={}, source_rd=0x{:x}, size={}, pages={}",
+            "Runtime shared rootfs stage mount_fast_path completed: share_id={}, source_rd=0x{:x}, size={}, pages={}, elapsed_ms={}",
             prepared.share_id, prepared.source_rd_addr, prepared.image_size, prepared.page_count
+            , mount_start.elapsed().as_millis()
         );
 
         Ok(prepared.image_id)
@@ -550,7 +560,8 @@ fn mount_prepared_shared_rootfs_fast_path(
 }
 
 fn preflight_shared_rootfs_block_device(path: &Path, fs_type: &str) -> Result<()> {
-    let mut file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut file =
+        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut buf = vec![0u8; 4096];
 
     file.read_exact(&mut buf)

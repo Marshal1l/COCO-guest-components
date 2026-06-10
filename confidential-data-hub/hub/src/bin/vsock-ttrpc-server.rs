@@ -15,20 +15,22 @@ use anyhow::Result;
 use image::greeter_server::{Greeter, GreeterServer};
 use image::{PrepareRootfsRequest, PrepareRootfsResponse};
 use image_rs::shared_rootfs::{
-    build_rootfs_image, rootfs_image_format_candidates, BuildRootfsImageOptions, RootfsImageFormat,
+    prepare_shared_rootfs_cache_from_bundle, read_shared_rootfs_cache_entry,
+    shared_rootfs_bundles_dir, shared_rootfs_cache_pending, shared_rootfs_images_dir,
+    wait_for_shared_rootfs_cache_entry, SharedRootfsCacheEntry,
 };
 use log::error;
 use protos::{api::*, api_ttrpc::ImagePullServiceClient};
 use std::fs;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 //constant
 pub const SERVER_PORT: u32 = 54321;
 const NANO_PER_SECOND: i64 = 1000 * 1000 * 1000;
 const IMAGE_PULL_TIMEOUT_SECS: i64 = 180;
 const CDH_ADDR: &str = "unix:///run/confidential-containers/cdh.sock";
-const SHARED_ROOTFS_DIR: &str = "/tmp/run/image-rs/shared-rootfs";
+const PENDING_CACHE_WAIT_SECS: u64 = 12;
+const PENDING_CACHE_POLL_MS: u64 = 200;
 //imagepullservice
 pub struct ImagePullService {
     client_image_pull: ImagePullServiceClient,
@@ -60,7 +62,10 @@ impl ImagePullService {
         );
         let res = self
             .client_image_pull
-            .pull_image(ttrpc::context::with_timeout(self.timeout_image_pull_ns), &req)
+            .pull_image(
+                ttrpc::context::with_timeout(self.timeout_image_pull_ns),
+                &req,
+            )
             .await?;
         println!("CDH pull image response: {:?}\n", res.manifest_digest);
         Ok(res.manifest_digest)
@@ -84,14 +89,17 @@ impl Greeter for MyGreeter {
     ) -> Result<Response<PrepareRootfsResponse>, Status> {
         let req = request.into_inner();
         let image_ref = req.image_ref;
+        let total_start = Instant::now();
         println!("Prepare shared rootfs request for: {}", image_ref);
+
+        if let Some(entry) = lookup_cached_shared_rootfs(&image_ref, total_start)? {
+            return Ok(Response::new(reply_from_cache_entry(entry)));
+        }
 
         let safe_ref = sanitize_path_component(&image_ref);
         let request_id = now_millis();
-        let bundle_path = PathBuf::from(SHARED_ROOTFS_DIR)
-            .join("bundles")
-            .join(format!("{}-{}", safe_ref, request_id));
-        let images_dir = PathBuf::from(SHARED_ROOTFS_DIR).join("images");
+        let bundle_path = shared_rootfs_bundles_dir().join(format!("{}-{}", safe_ref, request_id));
+        let images_dir = shared_rootfs_images_dir();
 
         fs::create_dir_all(&bundle_path).map_err(|err| {
             Status::internal(format!(
@@ -108,6 +116,7 @@ impl Greeter for MyGreeter {
             ))
         })?;
 
+        let pull_start = Instant::now();
         let image_id = self
             .image_pull_service
             .pull_image(&image_ref, &bundle_path.display().to_string())
@@ -116,136 +125,42 @@ impl Greeter for MyGreeter {
                 error!("pull_image failed for {}: {:#}", image_ref, err);
                 Status::internal(format!("pull_image failed for {}: {:#}", image_ref, err))
             })?;
+        println!(
+            "Image share stage pull_image completed: image_ref={}, image_id={}, elapsed_ms={}",
+            image_ref,
+            image_id,
+            pull_start.elapsed().as_millis()
+        );
 
-        let safe_image_id = sanitize_path_component(&image_id);
-        let rootfs_dir = bundle_path.join("rootfs");
-        if !rootfs_dir.is_dir() {
-            return Err(Status::internal(format!(
-                "bundle rootfs does not exist after pull_image: {}",
-                rootfs_dir.display()
-            )));
-        }
-
-        let rootfs_info =
-            prepare_shared_rootfs_image(&rootfs_dir, &images_dir, &safe_image_id, &image_ref)?;
-        let share =
-            image_rs::coco_image_share::create_from_file(&rootfs_info.path).map_err(|err| {
+        let cache_start = Instant::now();
+        let entry = prepare_shared_rootfs_cache_from_bundle(&image_ref, &image_id, &bundle_path)
+            .map_err(|err| {
                 error!(
-                    "failed to create RMM rootfs share for {}: {:#}",
-                    rootfs_info.path.display(),
-                    err
+                    "failed to prepare shared rootfs cache for {}: {:#}",
+                    image_ref, err
                 );
                 Status::internal(format!(
-                    "failed to create RMM rootfs share for {}: {:#}",
-                    rootfs_info.path.display(),
-                    err
+                    "failed to prepare shared rootfs cache for {}: {:#}",
+                    image_ref, err
                 ))
             })?;
         println!(
             "Created RMM rootfs share: path={}, share_id={}, source_rd=0x{:x}, size={}, pages={}",
-            rootfs_info.path.display(),
-            share.share_id,
-            share.source_rd_addr,
-            share.image_size,
-            share.page_count
+            entry.rootfs_image_path.display(),
+            entry.share_id,
+            entry.source_rd_addr,
+            entry.image_size,
+            entry.page_count
         );
-
-        let config_json = fs::read(bundle_path.join("config.json")).unwrap_or_default();
-        let reply = PrepareRootfsResponse {
-            image_id,
-            fs_type: rootfs_info.format.as_fs_type().to_string(),
-            image_size: rootfs_info.size,
-            block_size: 4096,
-            rootfs_digest: rootfs_info.sha256,
-            oci_config_json: config_json,
-            source_rd_addr: share.source_rd_addr,
-            share_id: share.share_id,
-            page_count: share.page_count,
-        };
-
         println!(
-            "Prepared RMM shared rootfs: image_ref={}, share_id={}, source_rd=0x{:x}, size={}, pages={}, digest={}",
+            "Image share stage cache/share completed: image_ref={}, share_id={}, elapsed_ms={}, total_ms={}",
             image_ref,
-            reply.share_id,
-            reply.source_rd_addr,
-            reply.image_size,
-            reply.page_count,
-            reply.rootfs_digest
+            entry.share_id,
+            cache_start.elapsed().as_millis(),
+            total_start.elapsed().as_millis()
         );
-        Ok(Response::new(reply))
-    }
-}
 
-fn prepare_shared_rootfs_image(
-    rootfs_dir: &std::path::Path,
-    images_dir: &std::path::Path,
-    safe_image_id: &str,
-    image_ref: &str,
-) -> Result<image_rs::shared_rootfs::RootfsImageInfo, Status> {
-    let mut failures = Vec::new();
-    for rootfs_format in rootfs_image_format_candidates() {
-        let rootfs_image_path =
-            images_dir.join(format!("{}.{}", safe_image_id, rootfs_format.as_fs_type()));
-
-        if rootfs_image_path.exists() {
-            let size = fs::metadata(&rootfs_image_path)
-                .map_err(|err| {
-                    Status::internal(format!(
-                        "failed to stat cached rootfs image {}: {:#}",
-                        rootfs_image_path.display(),
-                        err
-                    ))
-                })?
-                .len();
-            let sha256 =
-                image_rs::shared_rootfs::sha256_file(&rootfs_image_path).map_err(|err| {
-                    Status::internal(format!(
-                        "failed to hash cached rootfs image {}: {:#}",
-                        rootfs_image_path.display(),
-                        err
-                    ))
-                })?;
-            return Ok(image_rs::shared_rootfs::RootfsImageInfo {
-                path: rootfs_image_path,
-                format: rootfs_format,
-                size,
-                sha256,
-            });
-        }
-
-        let options = build_options_for_format(rootfs_format, rootfs_dir, &rootfs_image_path);
-        match build_rootfs_image(&options) {
-            Ok(info) => return Ok(info),
-            Err(err) => {
-                error!(
-                    "failed to build {} shared rootfs for {}: {:#}",
-                    rootfs_format.as_fs_type(),
-                    image_ref,
-                    err
-                );
-                failures.push(format!("{}: {:#}", rootfs_format.as_fs_type(), err));
-            }
-        }
-    }
-
-    Err(Status::internal(format!(
-        "failed to build shared rootfs for {}; attempted formats: {}",
-        image_ref,
-        failures.join("; ")
-    )))
-}
-
-fn build_options_for_format(
-    format: RootfsImageFormat,
-    rootfs_dir: &std::path::Path,
-    rootfs_image_path: &std::path::Path,
-) -> BuildRootfsImageOptions {
-    match format {
-        RootfsImageFormat::Erofs => BuildRootfsImageOptions::erofs(rootfs_dir, rootfs_image_path),
-        RootfsImageFormat::Squashfs => {
-            BuildRootfsImageOptions::squashfs(rootfs_dir, rootfs_image_path)
-        }
-        RootfsImageFormat::Ext4 => BuildRootfsImageOptions::ext4(rootfs_dir, rootfs_image_path),
+        Ok(Response::new(reply_from_cache_entry(entry)))
     }
 }
 
@@ -263,6 +178,89 @@ fn sanitize_path_component(input: &str) -> String {
     } else {
         out
     }
+}
+
+fn lookup_cached_shared_rootfs(
+    image_ref: &str,
+    start: Instant,
+) -> Result<Option<SharedRootfsCacheEntry>, Status> {
+    match read_shared_rootfs_cache_entry(image_ref) {
+        Ok(Some(entry)) => {
+            println!(
+                "Shared rootfs cache hit: image_ref={}, share_id={}, total_ms={}",
+                image_ref,
+                entry.share_id,
+                start.elapsed().as_millis()
+            );
+            return Ok(Some(entry));
+        }
+        Ok(None) => {}
+        Err(err) => {
+            println!(
+                "Shared rootfs cache miss after invalid entry: image_ref={}, error={:#}",
+                image_ref, err
+            );
+        }
+    }
+
+    if !shared_rootfs_cache_pending(image_ref) {
+        return Ok(None);
+    }
+
+    match wait_for_shared_rootfs_cache_entry(
+        image_ref,
+        Duration::from_secs(PENDING_CACHE_WAIT_SECS),
+        Duration::from_millis(PENDING_CACHE_POLL_MS),
+    ) {
+        Ok(Some(entry)) => {
+            println!(
+                "Shared rootfs cache hit after wait: image_ref={}, share_id={}, total_ms={}",
+                image_ref,
+                entry.share_id,
+                start.elapsed().as_millis()
+            );
+            Ok(Some(entry))
+        }
+        Ok(None) => Ok(None),
+        Err(err) => Err(Status::internal(format!(
+            "failed waiting for shared rootfs cache for {}: {:#}",
+            image_ref, err
+        ))),
+    }
+}
+
+fn reply_from_cache_entry(entry: SharedRootfsCacheEntry) -> PrepareRootfsResponse {
+    let reply = PrepareRootfsResponse {
+        image_id: entry.image_id,
+        fs_type: entry.fs_type,
+        image_size: entry.image_size,
+        block_size: entry.block_size,
+        rootfs_digest: entry.rootfs_digest,
+        oci_config_json: entry.oci_config_json,
+        source_rd_addr: entry.source_rd_addr,
+        share_id: entry.share_id,
+        page_count: entry.page_count,
+    };
+
+    println!(
+        "Created RMM rootfs share: path={}, share_id={}, source_rd=0x{:x}, size={}, pages={}",
+        entry.rootfs_image_path.display(),
+        reply.share_id,
+        reply.source_rd_addr,
+        reply.image_size,
+        reply.page_count
+    );
+    println!(
+        "Prepared RMM shared rootfs: image_ref={}, share_id={}, source_rd=0x{:x}, size={}, pages={}, digest={}",
+        entry.image_ref,
+        reply.share_id,
+        reply.source_rd_addr,
+        reply.image_size,
+        reply.page_count,
+        reply.rootfs_digest
+    );
+
+    reply
 }
 
 fn now_millis() -> u128 {
