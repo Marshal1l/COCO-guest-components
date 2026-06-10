@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 use std::{
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 mod protos;
@@ -359,50 +360,98 @@ async fn main() {
 async fn run_fast_vsock_server(image_pull_service: ImagePullService) -> std::io::Result<()> {
     let server_addr = VsockAddr::new(VMADDR_CID_ANY, FAST_SERVER_PORT);
     let listener = VsockListener::bind(server_addr)?;
+    let image_pull_service = Arc::new(image_pull_service);
     println!(
         "Fast image share vsock server listening on port {}",
         FAST_SERVER_PORT
     );
 
     loop {
-        let (stream, _) = listener.accept().await?;
-        if let Err(err) = handle_fast_vsock_connection(stream, &image_pull_service).await {
-            println!("Fast image share request failed: {:#}", err);
-        }
+        let (stream, peer_addr) = listener.accept().await?;
+        println!("Fast image share connection accepted: peer={:?}", peer_addr);
+        let image_pull_service = Arc::clone(&image_pull_service);
+        tokio::spawn(async move {
+            if let Err(err) = handle_fast_vsock_connection(stream, image_pull_service).await {
+                println!("Fast image share request failed: {:#}", err);
+            }
+        });
     }
 }
 
 async fn handle_fast_vsock_connection(
     mut stream: VsockStream,
-    image_pull_service: &ImagePullService,
+    image_pull_service: Arc<ImagePullService>,
 ) -> Result<(), anyhow::Error> {
-    let total_start = Instant::now();
+    let read_start = Instant::now();
     let req_bytes = read_fast_frame(&mut stream)
         .await
         .context("read fast prepare_rootfs request")?;
+    let request_start = Instant::now();
+    let read_wait_ms = read_start.elapsed().as_millis();
+    println!(
+        "Fast image share stage read_request completed: bytes={}, elapsed_ms={}, connection_idle_ms={}",
+        req_bytes.len(),
+        read_wait_ms,
+        read_wait_ms
+    );
+
+    let decode_start = Instant::now();
     let req = PrepareRootfsRequest::decode(req_bytes.as_slice())
         .context("decode fast prepare_rootfs request")?;
+    println!(
+        "Fast image share stage decode_request completed: image_ref={}, elapsed_ms={}",
+        req.image_ref,
+        decode_start.elapsed().as_millis()
+    );
 
-    let reply = prepare_rootfs_response(image_pull_service, req).await;
+    let prepare_start = Instant::now();
+    let reply = prepare_rootfs_response(&image_pull_service, req).await;
     match reply {
         Ok(reply) => {
+            println!(
+                "Fast image share stage prepare_response completed: share_id={}, elapsed_ms={}",
+                reply.share_id,
+                prepare_start.elapsed().as_millis()
+            );
+            let encode_start = Instant::now();
             let mut response = Vec::with_capacity(reply.encoded_len());
             reply
                 .encode(&mut response)
                 .context("encode fast prepare_rootfs response")?;
+            println!(
+                "Fast image share stage encode_response completed: share_id={}, bytes={}, elapsed_ms={}",
+                reply.share_id,
+                response.len(),
+                encode_start.elapsed().as_millis()
+            );
+            let write_start = Instant::now();
             write_fast_status_and_frame(&mut stream, 0, &response)
                 .await
                 .context("write fast prepare_rootfs response")?;
             println!(
-                "Fast image share request completed: elapsed_ms={}",
-                total_start.elapsed().as_millis()
+                "Fast image share stage write_response completed: share_id={}, bytes={}, elapsed_ms={}",
+                reply.share_id,
+                response.len(),
+                write_start.elapsed().as_millis()
+            );
+            println!(
+                "Fast image share request completed: elapsed_ms={}, connection_idle_ms={}",
+                request_start.elapsed().as_millis(),
+                read_wait_ms
             );
         }
         Err(status) => {
             let message = status.to_string();
+            let write_start = Instant::now();
             write_fast_status_and_frame(&mut stream, 1, message.as_bytes())
                 .await
                 .context("write fast prepare_rootfs error")?;
+            println!(
+                "Fast image share request failed response sent: status={}, elapsed_ms={}, total_ms={}",
+                message,
+                write_start.elapsed().as_millis(),
+                request_start.elapsed().as_millis()
+            );
         }
     }
 
@@ -438,10 +487,10 @@ async fn write_fast_status_and_frame(
             FAST_MAX_MESSAGE_SIZE
         );
     }
-    stream.write_all(&[status]).await?;
-    stream
-        .write_all(&(payload.len() as u32).to_be_bytes())
-        .await?;
-    stream.write_all(payload).await?;
+    let mut frame = Vec::with_capacity(1 + 4 + payload.len());
+    frame.push(status);
+    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    frame.extend_from_slice(payload);
+    stream.write_all(&frame).await?;
     Ok(())
 }
