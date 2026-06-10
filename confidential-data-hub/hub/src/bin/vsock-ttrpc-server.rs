@@ -11,172 +11,265 @@ use tonic::transport::{server::Connected, Server};
 pub mod image {
     tonic::include_proto!("image");
 }
-pub mod ioctl;
 use anyhow::Result;
-use base64::{engine::general_purpose::STANDARD, Engine};
 use image::greeter_server::{Greeter, GreeterServer};
-use image::{GetFileResponse, GetFileRpcRequest, RpcRequest, RpcResponse};
-use ioctl::image_ioctl::ImageIoctl;
-use log::error;
-use protos::{
-    api::*,
-    api_ttrpc::{
-        GetResourceServiceClient, ImagePullServiceClient, SealedSecretServiceClient,
-        SecureMountServiceClient,
-    },
-    keyprovider::*,
-    keyprovider_ttrpc::KeyProviderServiceClient,
+use image::{PrepareRootfsRequest, PrepareRootfsResponse};
+use image_rs::shared_rootfs::{
+    build_rootfs_image, rootfs_image_format_candidates, BuildRootfsImageOptions, RootfsImageFormat,
 };
+use log::error;
+use protos::{api::*, api_ttrpc::ImagePullServiceClient};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
-use ttrpc::{context, Client};
 //constant
 pub const SERVER_PORT: u32 = 54321;
 const NANO_PER_SECOND: i64 = 1000 * 1000 * 1000;
-const IMAGE_PULL_TIMEOUT: i64 = 30 * NANO_PER_SECOND;
+const IMAGE_PULL_TIMEOUT_SECS: i64 = 180;
 const CDH_ADDR: &str = "unix:///run/confidential-containers/cdh.sock";
+const SHARED_ROOTFS_DIR: &str = "/tmp/run/image-rs/shared-rootfs";
 //imagepullservice
 pub struct ImagePullService {
     client_image_pull: ImagePullServiceClient,
-    client_unwrap_key: KeyProviderServiceClient,
-    timeout_image_pull: i64,
+    timeout_image_pull_ns: i64,
 }
 impl ImagePullService {
-    fn new(cdh_addr: &str, timeout: i64) -> Self {
+    fn new(cdh_addr: &str, timeout_secs: i64) -> Self {
         let inner = ttrpc::asynchronous::Client::connect(cdh_addr).expect("connect ttrpc socket");
         let client_image_pull = ImagePullServiceClient::new(inner.clone());
-        let client_unwrap_key = KeyProviderServiceClient::new(inner.clone());
-        let timeout_image_pull = timeout * NANO_PER_SECOND;
+        let timeout_image_pull_ns = timeout_secs
+            .checked_mul(NANO_PER_SECOND)
+            .expect("image pull timeout overflows i64 nanoseconds");
         ImagePullService {
             client_image_pull,
-            client_unwrap_key,
-            timeout_image_pull,
+            timeout_image_pull_ns,
         }
     }
-    async fn guest_pull_image(&self, image_path: &str, bundle_path: &str) -> Result<String> {
-        let req = GuestImagePullRequest {
-            image_url: image_path.to_string(),
-            bundle_path: bundle_path.to_string(),
-            ..Default::default()
-        };
-        print!("seding guest_pull_image request to CDH: {:?}\n", req);
-        let res = self
-            .client_image_pull
-            .guest_pull_image(ttrpc::context::with_timeout(self.timeout_image_pull), &req)
-            .await?;
-        println!("CDH guest_pull_image response: {:?}\n", res.manifest_digest);
-        Ok(res.manifest_digest)
-    }
 
-    async fn pull_content(&self, image_path: &str, content_path: &str) -> Result<String> {
-        let req = ContentPullRequest {
-            image_url: image_path.to_string(),
-            content_path: content_path.to_string(),
-            ..Default::default()
-        };
-        print!("seding pull image request to CDH: {:?}\n", req);
-        let res = self
-            .client_image_pull
-            .pull_content(ttrpc::context::with_timeout(self.timeout_image_pull), &req)
-            .await?;
-        println!("CDH pull content response: {:?}\n", res.manifest_digest);
-        Ok(res.manifest_digest)
-    }
-    //TODO pull image and decrypt+upack(dont prepare bundle))
     async fn pull_image(&self, image_path: &str, bundle_path: &str) -> Result<String> {
         let req = ImagePullRequest {
             image_url: image_path.to_string(),
             bundle_path: bundle_path.to_string(),
             ..Default::default()
         };
-        print!("seding pull image request to CDH: {:?}\n", req);
+        println!(
+            "sending pull image request to CDH: {:?}, timeout={}s",
+            req,
+            self.timeout_image_pull_ns / NANO_PER_SECOND
+        );
         let res = self
             .client_image_pull
-            .pull_image(ttrpc::context::with_timeout(self.timeout_image_pull), &req)
+            .pull_image(ttrpc::context::with_timeout(self.timeout_image_pull_ns), &req)
             .await?;
         println!("CDH pull image response: {:?}\n", res.manifest_digest);
         Ok(res.manifest_digest)
     }
-    async fn unwrap_key(&self, annotation_path: &str) -> Result<String> {
-        let KeyProviderKeyWrapProtocolInput =
-            tokio::fs::read(annotation_path).await.expect("read file");
-        let req = KeyProviderKeyWrapProtocolInput {
-            KeyProviderKeyWrapProtocolInput,
-            ..Default::default()
-        };
-        let res = self
-            .client_unwrap_key
-            .un_wrap_key(context::with_timeout(self.timeout_image_pull), &req)
-            .await
-            .expect("request to CDH");
-        let res = STANDARD.encode(res.KeyProviderKeyWrapProtocolOutput);
-        println!("{res}");
-        Ok(res)
-    }
 }
 
 pub struct MyGreeter {
-    image_ioctl: ImageIoctl,
     image_pull_service: ImagePullService,
 }
 impl MyGreeter {
     pub fn new() -> Self {
-        let image_pull_service = ImagePullService::new(CDH_ADDR, IMAGE_PULL_TIMEOUT);
-        Self {
-            image_ioctl: ImageIoctl::new(),
-            image_pull_service,
-        }
+        let image_pull_service = ImagePullService::new(CDH_ADDR, IMAGE_PULL_TIMEOUT_SECS);
+        Self { image_pull_service }
     }
 }
 #[tonic::async_trait]
 impl Greeter for MyGreeter {
-    async fn say_hello(
+    async fn prepare_rootfs(
         &self,
-        request: Request<RpcRequest>,
-    ) -> Result<Response<RpcResponse>, Status> {
-        let image_path = request.into_inner().content;
-        println!("Get pull content request for: {}", image_path);
+        request: Request<PrepareRootfsRequest>,
+    ) -> Result<Response<PrepareRootfsResponse>, Status> {
+        let req = request.into_inner();
+        let image_ref = req.image_ref;
+        println!("Prepare shared rootfs request for: {}", image_ref);
+
+        let safe_ref = sanitize_path_component(&image_ref);
+        let request_id = now_millis();
+        let bundle_path = PathBuf::from(SHARED_ROOTFS_DIR)
+            .join("bundles")
+            .join(format!("{}-{}", safe_ref, request_id));
+        let images_dir = PathBuf::from(SHARED_ROOTFS_DIR).join("images");
+
+        fs::create_dir_all(&bundle_path).map_err(|err| {
+            Status::internal(format!(
+                "failed to create shared rootfs bundle dir {}: {:#}",
+                bundle_path.display(),
+                err
+            ))
+        })?;
+        fs::create_dir_all(&images_dir).map_err(|err| {
+            Status::internal(format!(
+                "failed to create shared rootfs image dir {}: {:#}",
+                images_dir.display(),
+                err
+            ))
+        })?;
+
         let image_id = self
             .image_pull_service
-            .pull_content(&image_path, "_")
+            .pull_image(&image_ref, &bundle_path.display().to_string())
             .await
-            .unwrap();
-        let reply = RpcResponse {
-            content: format!("{}", image_id),
-        };
-        Ok(Response::new(reply))
-    }
+            .map_err(|err| {
+                error!("pull_image failed for {}: {:#}", image_ref, err);
+                Status::internal(format!("pull_image failed for {}: {:#}", image_ref, err))
+            })?;
 
-    async fn get_file(
-        &self,
-        request: Request<GetFileRpcRequest>,
-    ) -> Result<Response<GetFileResponse>, Status> {
-        let req = request.into_inner();
-        println!(
-            "Get file request: path={}, rd_addr=0x{:x}, ipa_start=0x{:x}, ipa_size={}",
-            &req.file_path, &req.rd_addr, &req.ipa_start, &req.ipa_size
-        );
-
-        // 1.look at file_path,check if file exists
-        if !Path::new(&req.file_path).exists() {
-            error!("file {:?} not found!\n", &req.file_path);
-            return Err(Status::not_found(format!(
-                "File not found: {}",
-                &req.file_path
+        let safe_image_id = sanitize_path_component(&image_id);
+        let rootfs_dir = bundle_path.join("rootfs");
+        if !rootfs_dir.is_dir() {
+            return Err(Status::internal(format!(
+                "bundle rootfs does not exist after pull_image: {}",
+                rootfs_dir.display()
             )));
         }
-        // 2.load file by load_file_ioctl
-        let load_file_result = self.image_ioctl.load_file(PathBuf::from(&req.file_path))?;
-        // 3.map_ipa
-        self.image_ioctl
-            .map_ipa(req.rd_addr, req.ipa_start, load_file_result.file_size)?;
-        let reply = GetFileResponse {
-            size: load_file_result.file_size,
+
+        let rootfs_info =
+            prepare_shared_rootfs_image(&rootfs_dir, &images_dir, &safe_image_id, &image_ref)?;
+        let share =
+            image_rs::coco_image_share::create_from_file(&rootfs_info.path).map_err(|err| {
+                error!(
+                    "failed to create RMM rootfs share for {}: {:#}",
+                    rootfs_info.path.display(),
+                    err
+                );
+                Status::internal(format!(
+                    "failed to create RMM rootfs share for {}: {:#}",
+                    rootfs_info.path.display(),
+                    err
+                ))
+            })?;
+        println!(
+            "Created RMM rootfs share: path={}, share_id={}, source_rd=0x{:x}, size={}, pages={}",
+            rootfs_info.path.display(),
+            share.share_id,
+            share.source_rd_addr,
+            share.image_size,
+            share.page_count
+        );
+
+        let config_json = fs::read(bundle_path.join("config.json")).unwrap_or_default();
+        let reply = PrepareRootfsResponse {
+            image_id,
+            fs_type: rootfs_info.format.as_fs_type().to_string(),
+            image_size: rootfs_info.size,
+            block_size: 4096,
+            rootfs_digest: rootfs_info.sha256,
+            oci_config_json: config_json,
+            source_rd_addr: share.source_rd_addr,
+            share_id: share.share_id,
+            page_count: share.page_count,
         };
 
+        println!(
+            "Prepared RMM shared rootfs: image_ref={}, share_id={}, source_rd=0x{:x}, size={}, pages={}, digest={}",
+            image_ref,
+            reply.share_id,
+            reply.source_rd_addr,
+            reply.image_size,
+            reply.page_count,
+            reply.rootfs_digest
+        );
         Ok(Response::new(reply))
     }
+}
+
+fn prepare_shared_rootfs_image(
+    rootfs_dir: &std::path::Path,
+    images_dir: &std::path::Path,
+    safe_image_id: &str,
+    image_ref: &str,
+) -> Result<image_rs::shared_rootfs::RootfsImageInfo, Status> {
+    let mut failures = Vec::new();
+    for rootfs_format in rootfs_image_format_candidates() {
+        let rootfs_image_path =
+            images_dir.join(format!("{}.{}", safe_image_id, rootfs_format.as_fs_type()));
+
+        if rootfs_image_path.exists() {
+            let size = fs::metadata(&rootfs_image_path)
+                .map_err(|err| {
+                    Status::internal(format!(
+                        "failed to stat cached rootfs image {}: {:#}",
+                        rootfs_image_path.display(),
+                        err
+                    ))
+                })?
+                .len();
+            let sha256 =
+                image_rs::shared_rootfs::sha256_file(&rootfs_image_path).map_err(|err| {
+                    Status::internal(format!(
+                        "failed to hash cached rootfs image {}: {:#}",
+                        rootfs_image_path.display(),
+                        err
+                    ))
+                })?;
+            return Ok(image_rs::shared_rootfs::RootfsImageInfo {
+                path: rootfs_image_path,
+                format: rootfs_format,
+                size,
+                sha256,
+            });
+        }
+
+        let options = build_options_for_format(rootfs_format, rootfs_dir, &rootfs_image_path);
+        match build_rootfs_image(&options) {
+            Ok(info) => return Ok(info),
+            Err(err) => {
+                error!(
+                    "failed to build {} shared rootfs for {}: {:#}",
+                    rootfs_format.as_fs_type(),
+                    image_ref,
+                    err
+                );
+                failures.push(format!("{}: {:#}", rootfs_format.as_fs_type(), err));
+            }
+        }
+    }
+
+    Err(Status::internal(format!(
+        "failed to build shared rootfs for {}; attempted formats: {}",
+        image_ref,
+        failures.join("; ")
+    )))
+}
+
+fn build_options_for_format(
+    format: RootfsImageFormat,
+    rootfs_dir: &std::path::Path,
+    rootfs_image_path: &std::path::Path,
+) -> BuildRootfsImageOptions {
+    match format {
+        RootfsImageFormat::Erofs => BuildRootfsImageOptions::erofs(rootfs_dir, rootfs_image_path),
+        RootfsImageFormat::Squashfs => {
+            BuildRootfsImageOptions::squashfs(rootfs_dir, rootfs_image_path)
+        }
+        RootfsImageFormat::Ext4 => BuildRootfsImageOptions::ext4(rootfs_dir, rootfs_image_path),
+    }
+}
+
+fn sanitize_path_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "image".to_string()
+    } else {
+        out
+    }
+}
+
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
 }
 
 #[derive(Debug)]

@@ -3,17 +3,19 @@
 // SPDX-License-Identifier: Apache-2.0
 use crate::auth::Auth;
 use crate::bundle::{create_runtime_config, BUNDLE_ROOTFS};
+use crate::coco_image_share::SharedImage;
 use crate::config::{ImageConfig, CONFIGURATION_FILE_NAME, DEFAULT_WORK_DIR};
 use crate::decoder::Compression;
 use crate::layer_store::LayerStore;
 use crate::meta_store::{MetaStore, METAFILE};
 use crate::pull::PullClient;
+use crate::shared_rootfs::{
+    build_rootfs_image, mount_shared_rootfs_image, BuildRootfsImageOptions,
+    MountSharedRootfsOptions, RootfsImageFormat, RootfsImageInfo,
+};
 use crate::signature::SignatureValidator;
 use crate::snapshots::{SnapshotType, Snapshotter};
-use crate::stream::stream_processing;
 use anyhow::anyhow;
-use anyhow::Error;
-use anyhow::Ok;
 use anyhow::{bail, Context, Result};
 use log::error;
 use log::info;
@@ -21,22 +23,17 @@ use oci_client::manifest::{OciDescriptor, OciImageManifest};
 use oci_client::secrets::RegistryAuth;
 use oci_client::Reference;
 use oci_spec::image::{ImageConfiguration, Os};
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
-use std::ffi::CStr;
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-//
-use nix::libc::{c_char, ioctl};
-use std::ffi::CString;
-use std::fs::OpenOptions;
-use std::os::unix::io::AsRawFd;
 //vsock client
 use crate::vsock_ttrpc_client::VsockClient;
+
+const RUNTIME_SHARED_ROOTFS_BLOCK_DEVICE: &str = "/dev/cocoimg0";
 
 //
 #[cfg(feature = "snapshot-unionfs")]
@@ -86,116 +83,6 @@ pub struct ImageMeta {
 
     /// The metadata of image layers.
     pub layer_metas: Vec<LayerMeta>,
-}
-//the image file list which the guest cvm need to map
-/// The metadata info for container image.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct ImageFileList {
-    pub host_meta_path: String,
-    pub guest_meta_path: String,
-    pub image_layer_paths: Vec<String>,
-    pub guest_layer_paths: Vec<String>,
-    pub host_file_paths: Vec<String>,
-    pub host_dir_paths: Vec<String>,
-    pub guest_file_paths: Vec<String>,
-    pub guest_dir_paths: Vec<String>,
-}
-impl ImageFileList {
-    pub fn new() -> Self {
-        ImageFileList {
-            host_meta_path: String::new(),
-            guest_meta_path: String::new(),
-            image_layer_paths: Vec::<String>::new(),
-            guest_layer_paths: Vec::<String>::new(),
-            host_file_paths: Vec::<String>::new(),
-            host_dir_paths: Vec::<String>::new(),
-            guest_file_paths: Vec::<String>::new(),
-            guest_dir_paths: Vec::<String>::new(),
-        }
-    }
-    //add layer to file_list by layer's diffid
-    pub fn add_layer(&mut self, host_layer_path: &str, guest_layer_path: &str) {
-        self.image_layer_paths
-            .push([host_layer_path.to_string(), ".compress".to_string()].concat());
-        self.guest_layer_paths
-            .push([guest_layer_path.to_string(), ".compress".to_string()].concat());
-    }
-    pub fn set_meta_path(&mut self, host_meta_path: &str, guest_meta_path: &str) {
-        self.host_meta_path = host_meta_path.to_string();
-        self.guest_meta_path = guest_meta_path.to_string();
-    }
-    pub fn add_file(&mut self, host_file: &str, guest_file: &str) {
-        self.host_file_paths.push(host_file.to_string());
-        self.guest_file_paths.push(guest_file.to_string());
-    }
-    fn visit_dirs(&mut self, dir: &Path, modify_path: &str) -> Result<()> {
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                // 如果是目录，递归调用
-                self.host_dir_paths
-                    .push(path.to_string_lossy().into_owned());
-                self.guest_dir_paths.push(
-                    path.to_string_lossy()
-                        .into_owned()
-                        .replace(DEFAULT_WORK_DIR, &modify_path),
-                );
-                self.visit_dirs(&path, &modify_path)?;
-            } else {
-                // 如果是文件，添加路径到Vec
-                self.host_file_paths
-                    .push(path.to_string_lossy().into_owned());
-                self.guest_file_paths.push(
-                    path.to_string_lossy()
-                        .into_owned()
-                        .replace(DEFAULT_WORK_DIR, &modify_path),
-                );
-            }
-        }
-        Ok(())
-    }
-    pub fn set_lists(&mut self, modify_path: &str) {
-        let paths: Vec<String> = self.image_layer_paths.iter().cloned().collect();
-        for image_layer_path in paths {
-            let host_layer_path = Path::new(&image_layer_path);
-            let _ = self.visit_dirs(&host_layer_path, &modify_path);
-        }
-    }
-    pub fn clear(&mut self) {
-        self.host_meta_path.clear();
-        self.guest_meta_path.clear();
-        self.image_layer_paths.clear();
-        self.guest_layer_paths.clear();
-        self.host_file_paths.clear();
-        self.guest_file_paths.clear();
-    }
-    pub fn save_to_file(&self, file_path: &str) -> Result<()> {
-        // 序列化为 JSON 字符串
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-
-        // 获取文件所在的目录
-        let path = Path::new(file_path);
-        if let Some(parent) = path.parent() {
-            // 如果目录不存在，创建目录
-            fs::create_dir_all(parent)?;
-        }
-
-        // 创建或打开文件并写入 JSON 数据
-        let mut file = File::create(file_path)?;
-        file.write_all(json.as_bytes())?;
-        file.flush()?;
-
-        Ok(())
-    }
-    pub fn from_file(file_path: &str) -> Result<Self> {
-        let json = fs::read_to_string(file_path)?;
-        let image_list = serde_json::from_str(&json)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        Ok(image_list)
-    }
 }
 /// The`image-rs` client will support OCI image
 /// pulling, image signing verfication, image layer
@@ -294,466 +181,66 @@ impl ImageClient {
             layer_store,
         }
     }
-    // guest-fn:
-    // guest uncompress the compressed file on file_path
-    // the uncompressed output to dest_path
-    // file_decoder:uncompressed||Gzip||Zstd
-    // diff_id:the layer's diff_id
-    pub async fn guest_uncompress(
-        &self,
-        file_path: &str,
-        dest_path: &str,
-        diff_id: &str,
-        file_decoder: &str,
-    ) -> Result<String> {
-        println!("guest_uncompress for file:{:?}\n", diff_id);
-        let decoder = Compression::try_from(file_decoder)?;
-        let destination = Path::new(&dest_path);
-        let layer_reader = tokio::fs::File::open(&file_path)
-            .await
-            .context("failed to open compressed file for reading")?;
-        let async_decoder = decoder.async_decompress(layer_reader);
-        stream_processing(async_decoder, diff_id, destination).await
-    }
-
-    // guest-fn:
-    // 1.call image-cvm pull image and map the decrypt and uncompressed image to guest-cvm on /tmp/image_id
-    // 2.create snapshot(bundle) on bundle_dir by /tmp/image_id
     pub async fn guest_pull_image(
         &mut self,
         image_url: &str,
         bundle_dir: &Path,
-        auth_info: &Option<&str>,
-        decrypt_config: &Option<&str>,
+        _auth_info: &Option<&str>,
+        _decrypt_config: &Option<&str>,
     ) -> Result<String> {
-        let full_image_id = self
-            .guest_pull_content(image_url, bundle_dir)
+        self.guest_mount_shared_rootfs(image_url, bundle_dir)
             .await
-            .unwrap();
-        return Ok(full_image_id);
+            .context("failed to mount shared rootfs from image CVM")
     }
-    //guest-fn:call image_cvm to
-    //1.tell the image cvm image_url and get the image_id
-    //2.get file_trans_list from image_cvm
-    //3.get meta.json from image_cvm
-    //4.get layers from image_cvm
-    pub async fn guest_pull_content(
+
+    pub async fn guest_mount_shared_rootfs(
         &mut self,
         image_url: &str,
         bundle_dir: &Path,
     ) -> Result<String> {
         let mut vsock_client = VsockClient::new().await?;
-        //1.TODO发送请求向image-cvm通过image_url让其拉取镜像，通过返回值获取image_id
-        let mut dest_image_id = vsock_client.say_hello(image_url).await?;
-        //2.加上前缀sha256:
-        let full_image_id = dest_image_id.clone();
-        if let Some(stripped) = dest_image_id.strip_prefix("sha256:") {
-            dest_image_id = stripped.to_string();
-        }
-        println!("dest_image_id={:?}\n", &dest_image_id);
-        println!("full_image_id={:?}\n", &full_image_id);
-        //3.构建目标cvm中的image_file_list.json路径
-        let host_file_list_path = [
-            "/tmp/run/image-rs/metas/",
-            &dest_image_id,
-            "/image_file_list.json",
-        ]
-        .concat();
-        let guest_file_list_path = ["/tmp/", &dest_image_id, "/image_file_list.json"].concat();
-        //4.TODO映射image_file_list.json，从host_file_list_path到guest_file_list_path
-        vsock_client
-            .get_file(
-                PathBuf::from(&guest_file_list_path),
-                PathBuf::from(&host_file_list_path),
-            )
-            .await?;
-        //5.读取json文件获取信息
-        let file_list: ImageFileList = match ImageFileList::from_file(&guest_file_list_path) {
-            std::result::Result::Ok(result) => {
-                println!("load ImageFileList");
-                result
-            }
-            Err(e) => {
-                eprintln!("fail to load ImageFileList: {}", e);
-                ImageFileList::new()
-            }
-        };
-        //6.TODO映射layer，从host_layer_path到guest_layer_path
-        for (host_layer_path, guest_layer_path) in file_list
-            .image_layer_paths
-            .iter()
-            .zip(file_list.guest_layer_paths.iter())
-        {
-            vsock_client
-                .get_file(
-                    PathBuf::from(&guest_layer_path),
-                    PathBuf::from(&host_layer_path),
-                )
-                .await?;
-            println!(
-                "host_layer_path={:?}\nguest_layer_path={:?}\n",
-                host_layer_path, guest_layer_path
-            );
-        }
-        //7.TODO映射meta，从file_list.host_meta_path到file_list.guest_meta_path
-        vsock_client
-            .get_file(
-                PathBuf::from(&file_list.guest_meta_path),
-                PathBuf::from(&file_list.host_meta_path),
-            )
-            .await?;
-        //8.解压layer
-        for guest_layer_path in file_list.guest_layer_paths.iter() {
-            //解压镜像层
-            self.guest_uncompress(
-                guest_layer_path,
-                &guest_layer_path.replace(".compress", ""),
-                &full_image_id,
-                &"application/vnd.oci.image.layer.v1.tar+gzip".to_string(),
-            )
+        let prepared = vsock_client
+            .prepare_rootfs(image_url)
             .await
-            .map(|v| println!("{:?}", v))?;
-        }
-        //9.创建bundle目录
-        let map_dir = ["/tmp/", &dest_image_id].concat();
-        println!(
-            "map_dir={:?}\nbundle_dir={:?}",
-            &map_dir,
-            &bundle_dir.display()
-        );
-        let map_path = Path::new(&map_dir);
-        let map_result = self
-            .create_map_bundle(bundle_dir, &map_path, full_image_id.to_string())
-            .await;
-        match map_result {
-            std::result::Result::Ok(result) => {
-                info!(
-                    "[create_map_bundle] create_map_bundle successfully={}",
-                    result
-                );
-                return Ok(full_image_id.to_string());
-            }
-            //already have the image
-            std::result::Result::Err(_err) => {
-                info!("[create_map_bundle] create_map_bundle failed={}", _err);
-                return Err(anyhow!(full_image_id.to_string()));
-            }
-        }
-    }
-    // guest-fn:create bundle from the image in map mem.
-    // map_dir must be /tmp/image_id/
-    //                           /meta_store.json
-    //                           /layers
-    // meta_store just have dest image's ImageMeta
-    // -->
-    // image_db.layer_metas should be modified->store_path must be /tmp/image_id/layers/num
-    // layer_db should be modified->store_path must be /tmp/image_id/layers/num
-    //
-    pub async fn create_map_bundle(
-        &mut self,
-        bundle_dir: &Path,
-        map_dir: &Path,
-        image_id: String,
-    ) -> Result<String> {
-        let snapshot = match self.snapshots.get_mut(&self.config.default_snapshot) {
-            Some(s) => s,
-            _ => {
-                bail!(
-                    "default snapshot {} not found",
-                    &self.config.default_snapshot
-                );
-            }
-        };
-        //get image_db from map_dir/meta_store.json
-        let meta_store = Arc::new(RwLock::new(MetaStore::try_from(
-            map_dir.join(METAFILE).as_path(),
-        )?));
+            .context("failed to prepare shared rootfs in image CVM")?;
 
-        let m = meta_store.read().await;
-        let image_db = &m.image_db;
-        println!("[create_map_bundle] image_db:{:?}\n", &m.image_db);
-        println!("[create_map_bundle] image_id:{:?}\n", &image_id);
-        //image_db only have dest ImageMeta,so don't need id to get image_data
-        let dest_image_meta: &ImageMeta = image_db
-            .iter()
-            .find(|(_, meta)| image_id == meta.id)
-            .map(|(_, meta)| meta)
-            .expect("Image not found in meta store");
-        return create_bundle(dest_image_meta, bundle_dir, snapshot);
-        // if let Some(image_data) = &m.image_db.get(&image_id) {
-        //     println!("image_id:{:?}\nimage_data.id:{:?}",&image_id,&image_data.id);
-        //     if image_id == image_data.id {
-        //         println!("create_map_bundle enter create_bundle!/n");
-        //         return create_bundle(image_data, bundle_dir, snapshot);
-        //     }
-        //     return Err(Error::msg(("error create_map_bundle=>couldn's find image").to_string()));
-        // }
-        // return Err(Error::msg(("error create_map_bundle").to_string()));
-    }
-    //image-fn:
-    //pull_image_content:pull image, signature validate,decrypt and uncompress
-    //if already have dest's meta.json,
-    //  directly return image_id
-    //else
-    //  pull image, signature validate,decrypt and uncompress
-    //  return image_digest
-    pub async fn pull_image_content(
-        &mut self,
-        image_url: &str,
-        auth_info: &Option<&str>,
-        decrypt_config: &Option<&str>,
-    ) -> Result<String> {
-        info!("pull content start MZHMZH------------------\n");
-        // {
-        //     info!("display_image_meta-----------\n");
-        //     let m: tokio::sync::RwLockReadGuard<'_, MetaStore> = self.meta_store.read().await;
-        //     info!("ImageMetaStore: {:#?}", m.image_db);
-        //     info!("LayersStore: {:#?}", m.layer_db);
-        // }
-        let reference = Reference::try_from(image_url)?;
-        // Try to find a valid registry auth. Logic order
-        // 1. the input parameter
-        // 2. from self.registry_auth
-        // 3. use Anonymous auth
-        info!(
-            "Parsed reference: registry={:?}, repository={:?}, tag={:?}, digest={:?}",
-            reference.registry(),
-            reference.repository(),
-            reference.tag(),
-            reference.digest()
-        );
-        let auth = match auth_info {
-            Some(input_auth) => match input_auth.split_once(':') {
-                Some((username, password)) => {
-                    RegistryAuth::Basic(username.to_string(), password.to_string())
-                }
-                None => bail!("Invalid authentication info ({:?})", auth_info),
-            },
-            None => match &self.registry_auth {
-                Some(registry_auth) => registry_auth.credential_for_reference(&reference).await?,
-                None => {
-                    info!("Use Anonymous image registry auth");
-                    RegistryAuth::Anonymous
-                }
-            },
-        };
-        let mut client = PullClient::new(
-            reference,
-            self.layer_store.clone(),
-            &auth,
-            self.config.max_concurrent_layer_downloads_per_image,
-            self.config.skip_proxy_ips.as_deref(),
-            self.config.image_pull_proxy.as_deref(),
-            self.config.extra_root_certificates.clone(),
-        )?;
-        let (image_manifest, image_digest, image_config) = client.pull_manifest().await?;
-        info!("Image manifest: {:?}\n", image_manifest);
-        let id = image_manifest.config.digest.clone();
+        fs::create_dir_all(bundle_dir)
+            .with_context(|| format!("failed to create bundle dir {}", bundle_dir.display()))?;
 
-        // If image has already been populated
-        // image_mata record this image
-        {
-            let m: tokio::sync::RwLockReadGuard<'_, MetaStore> = self.meta_store.read().await;
-            if let Some(_image_data) = &m.image_db.get(&id) {
-                info!("[pull_image_content]:Image content are already pulled");
-                return Err(Error::msg("Image content are already pulled"));
-            }
-        }
-        #[cfg(feature = "signature")]
-        if let Some(signature_validator) = &self.signature_validator {
-            signature_validator
-                .check_image_signature(image_url, &image_digest, &auth)
-                .await
-                .context("image security validation failed")?;
-        }
-        //image has not been populated
-        //create image_meta
-        let (mut image_data, unique_layers, unique_diff_ids) = create_image_meta(
-            &id,
-            image_url,
-            &image_manifest,
-            &image_digest,
-            &image_config,
-        )?;
-        info!("[pull_image_content]:create_image_meta!\n");
-        let unique_layers_len = unique_layers.len();
-        info!(
-            "[pull_image_content]:unique_layers_len:{}",
-            unique_layers_len
-        );
-        {
-            let mut num = 0;
-            for unique_diff_id in &unique_diff_ids {
-                info!("unique_diff_id[{}]:{}", num, unique_diff_id);
-                num += 1;
-            }
-        }
-        let layer_metas = client
-            .async_pull_layers(
-                unique_layers,
-                &unique_diff_ids,
-                decrypt_config,
-                self.meta_store.clone(),
-            )
-            .await?;
-        info!("[pull_image_content]:async_pull_layers!\n");
-        image_data.layer_metas = layer_metas;
-        let layer_db: HashMap<String, LayerMeta> = image_data
-            .layer_metas
-            .iter()
-            .map(|layer| (layer.compressed_digest.clone(), layer.clone()))
-            .collect();
-        info!("[pull_image_content]:write update to layer meta_store");
-        self.meta_store.write().await.layer_db.extend(layer_db);
-        if unique_layers_len != image_data.layer_metas.len() {
+        write_runtime_config_from_image_cvm(bundle_dir, &prepared.oci_config_json)?;
+
+        if prepared.share_id == 0 || prepared.source_rd_addr == 0 {
             bail!(
-                " {} layers failed to pull",
-                unique_layers_len - image_data.layer_metas.len()
+                "image CVM did not return an RMM rootfs share descriptor for {}",
+                image_url
             );
         }
-        info!("[pull_image_content]:finish write the layer meta_store");
-        info!("[pull_image_content]:write update to image meta_store");
-        self.meta_store
-            .write()
-            .await
-            .image_db
-            .insert(image_data.id.clone(), image_data.clone());
 
-        let meta_file = self
-            .config
-            .work_dir
-            .join(METAFILE)
-            .to_string_lossy()
-            .to_string();
-        {
-            self.meta_store
-                .write()
-                .await
-                .write_to_file(&meta_file)
-                .context("update meta store failed")?;
-        }
-        info!("[pull_image_content]:finish write the image meta_store");
-        info!("[pull_image_content]:pull image content successfully");
-        return Ok(image_data.id.to_string());
+        let shared_image = SharedImage {
+            share_id: prepared.share_id,
+            source_rd_addr: prepared.source_rd_addr,
+            image_size: prepared.image_size,
+            page_count: prepared.page_count,
+        };
+        mount_prepared_shared_rootfs_fast_path(shared_image, bundle_dir, &prepared.fs_type)?;
+        info!(
+            "Mounted shared rootfs through RMM fast path: share_id={}, source_rd=0x{:x}, size={}, pages={}",
+            prepared.share_id, prepared.source_rd_addr, prepared.image_size, prepared.page_count
+        );
+
+        Ok(prepared.image_id)
     }
-    //image-fn:
-    //  1.pull_image_content:pull image, signature validate,decrypt and uncompress
-    //  2.create dest meta_store.json
-    //  return image_id
+
     pub async fn pull_content(
         &mut self,
         image_url: &str,
-        _content_dir: &Path,
+        content_dir: &Path,
         auth_info: &Option<&str>,
         decrypt_config: &Option<&str>,
     ) -> Result<String> {
-        let image_id = self
-            .pull_image_content(image_url, auth_info, decrypt_config)
-            .await;
-        //create dest meta_store.json
-        //get image_id
-        match image_id {
-            std::result::Result::Ok(result) => {
-                info!("[pull content]:image_id={}", &result);
-                //use image_id find image meta from meta_store.json
-                self.create_dest_meta(image_url, result.clone()).await;
-                return Ok(result.to_string());
-            }
-            //already have the image
-            std::result::Result::Err(err) => {
-                return Err(err);
-            }
-        }
-    }
-    pub async fn create_dest_meta(&self, image_url: &str, image_id: String) -> Result<String> {
-        //store the image_id into file named image_url
-        let image_name = &image_url.split('/').last().unwrap_or(image_url);
-        let store_image_id_str = [DEFAULT_WORK_DIR, "metas/", &image_name].concat();
-        let store_image_id_path = Path::new(&store_image_id_str);
-        if let Some(parent_image_id) = store_image_id_path.parent() {
-            // 如果目录不存在，创建目录
-            fs::create_dir_all(parent_image_id)?;
-        }
-        // 创建或打开文件并写入 JSON 数据
-        let mut file_image_id = File::create(store_image_id_path)?;
-        file_image_id.write_all(&image_id.replace("sha256:", "").as_bytes())?;
-        file_image_id.flush()?;
-        //
-        let mut image_file_list = ImageFileList::new();
-        info!(
-            "[create_dest_meta]:start create_dest_meta for image which id={}",
-            image_id
-        );
-        //create dest_meta
-        //build dest_image_meta
-        {
-            let m: tokio::sync::RwLockReadGuard<'_, MetaStore> = self.meta_store.read().await;
-            let image_db = &m.image_db;
-            //1.use image_id to find image meta from image_db
-            let dest_image_meta: &ImageMeta = &image_db
-                .iter()
-                .find(|(_, meta)| image_id == meta.id)
-                .map(|(_, meta)| meta)
-                .expect("Image not found in meta store");
-            info!(
-                "[create_dest_meta]:find image_meta for {}",
-                dest_image_meta.id
-            );
-            //2.create the dest_meta->dest_file_meta
-            let mut dest_file_meta = dest_image_meta.clone();
-            //release m
-            //std::mem::drop(m);
-            let dest_layer_meta = &mut dest_file_meta.layer_metas;
-            //3.modify dest_file_meta's layer store path to /tmp/image_id/
-            let nosha_id = &image_id.replace("sha256:", "");
-            let modify_dir = ["/tmp/", &nosha_id, "/"].concat();
-            for dest_layer in dest_layer_meta.iter_mut() {
-                let before_dest_layer_path = dest_layer.store_path.clone();
-                dest_layer.store_path =
-                    dest_layer.store_path.replace(DEFAULT_WORK_DIR, &modify_dir);
-                image_file_list.add_layer(&before_dest_layer_path, &dest_layer.store_path);
-                //info!("dest_layer.store_path:{}", dest_layer.store_path);
-            }
-            //4.set the dest_meta_dir as workdir/metas/image_id/
-            let dest_suffix_dir = [DEFAULT_WORK_DIR, "metas/", &nosha_id, "/"].concat();
-            let dest_meta_dir = [&dest_suffix_dir, "meta_store.json"].concat();
-            image_file_list.set_meta_path(
-                &dest_meta_dir,
-                &dest_meta_dir.replace(&dest_suffix_dir, &modify_dir),
-            );
-            //5.make sure the directory workdir/metas/image_id/ exists
-            if !Path::new(&dest_suffix_dir).exists() {
-                match fs::create_dir_all(&dest_suffix_dir) {
-                    std::result::Result::Ok(_) => {
-                        info!("[create_dest_meta]:create directory={}", &dest_suffix_dir);
-                    }
-                    std::result::Result::Err(e) => {
-                        info!("[create_dest_meta]:Error creating directory: {}", e)
-                    }
-                }
-            }
-            //6.save the image_meta to workdir/metas/image_id/meta_store.json
-            let mut dest_meta_store = MetaStore::default();
-            dest_meta_store
-                .image_db
-                .insert(image_id.clone(), dest_file_meta);
-            //add layers_store
-            match dest_meta_store.write_to_file(&dest_meta_dir) {
-                std::result::Result::Ok(_) => info!(
-                    "[create_dest_meta]:File written successfully={}",
-                    dest_meta_dir
-                ),
-                std::result::Result::Err(e) => {
-                    info!("[create_dest_meta]:Error writing file: {}", e)
-                }
-            }
-            //image_file_list.set_lists(&modify_dir);
-            //7.save the image_file_list to workdir/metas/image_id/image_file_list.json
-            let dest_file_list_path =
-                dest_meta_dir.replace("meta_store.json", "image_file_list.json");
-            let _ = image_file_list.save_to_file(&dest_file_list_path);
-        }
-        return Ok(image_id.to_string());
+        self.pull_image(image_url, content_dir, auth_info, decrypt_config)
+            .await
+            .context("failed to pull image content as OCI bundle")
     }
     /// pull_image pulls an image with optional auth info and decrypt config
     /// and store the pulled data under user defined work_dir/layers.
@@ -926,6 +413,33 @@ impl ImageClient {
         Ok(image_id)
     }
 
+    pub async fn prepare_shared_rootfs_image(
+        &mut self,
+        image_url: &str,
+        bundle_dir: &Path,
+        output_image: &Path,
+        auth_info: &Option<&str>,
+        decrypt_config: &Option<&str>,
+    ) -> Result<RootfsImageInfo> {
+        self.pull_image(image_url, bundle_dir, auth_info, decrypt_config)
+            .await
+            .context("failed to prepare bundle for shared rootfs image")?;
+
+        let rootfs_dir = bundle_dir.join(BUNDLE_ROOTFS);
+        if !rootfs_dir.is_dir() {
+            bail!("bundle rootfs does not exist: {}", rootfs_dir.display());
+        }
+
+        let options = BuildRootfsImageOptions {
+            rootfs_dir,
+            output_image: output_image.to_path_buf(),
+            format: RootfsImageFormat::Squashfs,
+            image_size_mb: 64,
+            squashfs_compressor: "gzip".to_string(),
+        };
+        build_rootfs_image(&options).context("failed to build shared rootfs image")
+    }
+
     #[cfg(feature = "nydus")]
     async fn do_pull_image_with_nydus(
         &mut self,
@@ -998,6 +512,67 @@ impl ImageClient {
 
         Ok(image_id)
     }
+}
+
+fn write_runtime_config_from_image_cvm(bundle_dir: &Path, config_json: &[u8]) -> Result<()> {
+    if config_json.is_empty() {
+        return Ok(());
+    }
+
+    let config_path = bundle_dir.join("config.json");
+    fs::write(&config_path, config_json)
+        .with_context(|| format!("failed to write {}", config_path.display()))
+}
+
+fn mount_prepared_shared_rootfs_fast_path(
+    shared_image: SharedImage,
+    bundle_dir: &Path,
+    fs_type: &str,
+) -> Result<()> {
+    if shared_image.image_size == 0 {
+        bail!("image CVM prepared an empty RMM shared rootfs image");
+    }
+
+    let _ = crate::coco_image_share::destroy_device();
+    crate::coco_image_share::create_device(shared_image)
+        .context("failed to create /dev/cocoimg0 for RMM shared rootfs")?;
+    preflight_shared_rootfs_block_device(Path::new(RUNTIME_SHARED_ROOTFS_BLOCK_DEVICE), fs_type)
+        .context("failed to preflight /dev/cocoimg0 for RMM shared rootfs")?;
+
+    let mut mount_options =
+        MountSharedRootfsOptions::new(Path::new(RUNTIME_SHARED_ROOTFS_BLOCK_DEVICE), bundle_dir);
+    mount_options.fs_type = Some(fs_type.to_string());
+    mount_options.direct_block_device = true;
+    mount_shared_rootfs_image(&mount_options)
+        .context("failed to mount RMM shared rootfs block device")?;
+
+    Ok(())
+}
+
+fn preflight_shared_rootfs_block_device(path: &Path, fs_type: &str) -> Result<()> {
+    let mut file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut buf = vec![0u8; 4096];
+
+    file.read_exact(&mut buf)
+        .with_context(|| format!("failed to read first 4096 bytes from {}", path.display()))?;
+    match fs_type {
+        "erofs" if u32::from_le_bytes(buf[1024..1028].try_into().unwrap()) != 0xE0F5E1E2 => {
+            bail!(
+                "{} has invalid EROFS magic at offset 1024: {:02x?}",
+                path.display(),
+                &buf[1024..1028]
+            );
+        }
+        "squashfs" if &buf[0..4] != b"hsqs" => {
+            bail!(
+                "{} has invalid SquashFS magic at offset 0: {:02x?}",
+                path.display(),
+                &buf[0..4]
+            );
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Create image meta object with the image info

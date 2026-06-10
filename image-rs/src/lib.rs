@@ -7,6 +7,7 @@ pub const ERR_BAD_UNCOMPRESSED_DIGEST: &str = "unsupported uncompressed digest f
 pub mod auth;
 pub mod builder;
 pub mod bundle;
+pub mod coco_image_share;
 pub mod config;
 pub mod decoder;
 pub mod decrypt;
@@ -18,6 +19,7 @@ pub mod meta_store;
 pub mod nydus;
 pub mod pull;
 pub mod resource;
+pub mod shared_rootfs;
 #[cfg(feature = "signature")]
 pub mod signature;
 pub mod snapshots;

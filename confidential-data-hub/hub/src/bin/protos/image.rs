@@ -24,25 +24,25 @@
 /// of protobuf runtime.
 const _PROTOBUF_VERSION_CHECK: () = ::protobuf::VERSION_3_7_1;
 
-// @@protoc_insertion_point(message:image.RpcRequest)
+// @@protoc_insertion_point(message:image.PrepareRootfsRequest)
 #[derive(PartialEq,Clone,Default,Debug)]
-pub struct RpcRequest {
+pub struct PrepareRootfsRequest {
     // message fields
-    // @@protoc_insertion_point(field:image.RpcRequest.content)
-    pub content: ::std::string::String,
+    // @@protoc_insertion_point(field:image.PrepareRootfsRequest.image_ref)
+    pub image_ref: ::std::string::String,
     // special fields
-    // @@protoc_insertion_point(special_field:image.RpcRequest.special_fields)
+    // @@protoc_insertion_point(special_field:image.PrepareRootfsRequest.special_fields)
     pub special_fields: ::protobuf::SpecialFields,
 }
 
-impl<'a> ::std::default::Default for &'a RpcRequest {
-    fn default() -> &'a RpcRequest {
-        <RpcRequest as ::protobuf::Message>::default_instance()
+impl<'a> ::std::default::Default for &'a PrepareRootfsRequest {
+    fn default() -> &'a PrepareRootfsRequest {
+        <PrepareRootfsRequest as ::protobuf::Message>::default_instance()
     }
 }
 
-impl RpcRequest {
-    pub fn new() -> RpcRequest {
+impl PrepareRootfsRequest {
+    pub fn new() -> PrepareRootfsRequest {
         ::std::default::Default::default()
     }
 
@@ -50,20 +50,20 @@ impl RpcRequest {
         let mut fields = ::std::vec::Vec::with_capacity(1);
         let mut oneofs = ::std::vec::Vec::with_capacity(0);
         fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
-            "content",
-            |m: &RpcRequest| { &m.content },
-            |m: &mut RpcRequest| { &mut m.content },
+            "image_ref",
+            |m: &PrepareRootfsRequest| { &m.image_ref },
+            |m: &mut PrepareRootfsRequest| { &mut m.image_ref },
         ));
-        ::protobuf::reflect::GeneratedMessageDescriptorData::new_2::<RpcRequest>(
-            "RpcRequest",
+        ::protobuf::reflect::GeneratedMessageDescriptorData::new_2::<PrepareRootfsRequest>(
+            "PrepareRootfsRequest",
             fields,
             oneofs,
         )
     }
 }
 
-impl ::protobuf::Message for RpcRequest {
-    const NAME: &'static str = "RpcRequest";
+impl ::protobuf::Message for PrepareRootfsRequest {
+    const NAME: &'static str = "PrepareRootfsRequest";
 
     fn is_initialized(&self) -> bool {
         true
@@ -73,7 +73,7 @@ impl ::protobuf::Message for RpcRequest {
         while let Some(tag) = is.read_raw_tag_or_eof()? {
             match tag {
                 10 => {
-                    self.content = is.read_string()?;
+                    self.image_ref = is.read_string()?;
                 },
                 tag => {
                     ::protobuf::rt::read_unknown_or_skip_group(tag, is, self.special_fields.mut_unknown_fields())?;
@@ -87,8 +87,8 @@ impl ::protobuf::Message for RpcRequest {
     #[allow(unused_variables)]
     fn compute_size(&self) -> u64 {
         let mut my_size = 0;
-        if !self.content.is_empty() {
-            my_size += ::protobuf::rt::string_size(1, &self.content);
+        if !self.image_ref.is_empty() {
+            my_size += ::protobuf::rt::string_size(1, &self.image_ref);
         }
         my_size += ::protobuf::rt::unknown_fields_size(self.special_fields.unknown_fields());
         self.special_fields.cached_size().set(my_size as u32);
@@ -96,8 +96,8 @@ impl ::protobuf::Message for RpcRequest {
     }
 
     fn write_to_with_cached_sizes(&self, os: &mut ::protobuf::CodedOutputStream<'_>) -> ::protobuf::Result<()> {
-        if !self.content.is_empty() {
-            os.write_string(1, &self.content)?;
+        if !self.image_ref.is_empty() {
+            os.write_string(1, &self.image_ref)?;
         }
         os.write_unknown_fields(self.special_fields.unknown_fields())?;
         ::std::result::Result::Ok(())
@@ -111,81 +111,137 @@ impl ::protobuf::Message for RpcRequest {
         &mut self.special_fields
     }
 
-    fn new() -> RpcRequest {
-        RpcRequest::new()
+    fn new() -> PrepareRootfsRequest {
+        PrepareRootfsRequest::new()
     }
 
     fn clear(&mut self) {
-        self.content.clear();
+        self.image_ref.clear();
         self.special_fields.clear();
     }
 
-    fn default_instance() -> &'static RpcRequest {
-        static instance: RpcRequest = RpcRequest {
-            content: ::std::string::String::new(),
+    fn default_instance() -> &'static PrepareRootfsRequest {
+        static instance: PrepareRootfsRequest = PrepareRootfsRequest {
+            image_ref: ::std::string::String::new(),
             special_fields: ::protobuf::SpecialFields::new(),
         };
         &instance
     }
 }
 
-impl ::protobuf::MessageFull for RpcRequest {
+impl ::protobuf::MessageFull for PrepareRootfsRequest {
     fn descriptor() -> ::protobuf::reflect::MessageDescriptor {
         static descriptor: ::protobuf::rt::Lazy<::protobuf::reflect::MessageDescriptor> = ::protobuf::rt::Lazy::new();
-        descriptor.get(|| file_descriptor().message_by_package_relative_name("RpcRequest").unwrap()).clone()
+        descriptor.get(|| file_descriptor().message_by_package_relative_name("PrepareRootfsRequest").unwrap()).clone()
     }
 }
 
-impl ::std::fmt::Display for RpcRequest {
+impl ::std::fmt::Display for PrepareRootfsRequest {
     fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
         ::protobuf::text_format::fmt(self, f)
     }
 }
 
-impl ::protobuf::reflect::ProtobufValue for RpcRequest {
+impl ::protobuf::reflect::ProtobufValue for PrepareRootfsRequest {
     type RuntimeType = ::protobuf::reflect::rt::RuntimeTypeMessage<Self>;
 }
 
-// @@protoc_insertion_point(message:image.RpcResponse)
+// @@protoc_insertion_point(message:image.PrepareRootfsResponse)
 #[derive(PartialEq,Clone,Default,Debug)]
-pub struct RpcResponse {
+pub struct PrepareRootfsResponse {
     // message fields
-    // @@protoc_insertion_point(field:image.RpcResponse.content)
-    pub content: ::std::string::String,
+    // @@protoc_insertion_point(field:image.PrepareRootfsResponse.image_id)
+    pub image_id: ::std::string::String,
+    // @@protoc_insertion_point(field:image.PrepareRootfsResponse.fs_type)
+    pub fs_type: ::std::string::String,
+    // @@protoc_insertion_point(field:image.PrepareRootfsResponse.image_size)
+    pub image_size: u64,
+    // @@protoc_insertion_point(field:image.PrepareRootfsResponse.block_size)
+    pub block_size: u64,
+    // @@protoc_insertion_point(field:image.PrepareRootfsResponse.rootfs_digest)
+    pub rootfs_digest: ::std::string::String,
+    // @@protoc_insertion_point(field:image.PrepareRootfsResponse.oci_config_json)
+    pub oci_config_json: ::std::vec::Vec<u8>,
+    // @@protoc_insertion_point(field:image.PrepareRootfsResponse.source_rd_addr)
+    pub source_rd_addr: u64,
+    // @@protoc_insertion_point(field:image.PrepareRootfsResponse.share_id)
+    pub share_id: u64,
+    // @@protoc_insertion_point(field:image.PrepareRootfsResponse.page_count)
+    pub page_count: u64,
     // special fields
-    // @@protoc_insertion_point(special_field:image.RpcResponse.special_fields)
+    // @@protoc_insertion_point(special_field:image.PrepareRootfsResponse.special_fields)
     pub special_fields: ::protobuf::SpecialFields,
 }
 
-impl<'a> ::std::default::Default for &'a RpcResponse {
-    fn default() -> &'a RpcResponse {
-        <RpcResponse as ::protobuf::Message>::default_instance()
+impl<'a> ::std::default::Default for &'a PrepareRootfsResponse {
+    fn default() -> &'a PrepareRootfsResponse {
+        <PrepareRootfsResponse as ::protobuf::Message>::default_instance()
     }
 }
 
-impl RpcResponse {
-    pub fn new() -> RpcResponse {
+impl PrepareRootfsResponse {
+    pub fn new() -> PrepareRootfsResponse {
         ::std::default::Default::default()
     }
 
     fn generated_message_descriptor_data() -> ::protobuf::reflect::GeneratedMessageDescriptorData {
-        let mut fields = ::std::vec::Vec::with_capacity(1);
+        let mut fields = ::std::vec::Vec::with_capacity(9);
         let mut oneofs = ::std::vec::Vec::with_capacity(0);
         fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
-            "content",
-            |m: &RpcResponse| { &m.content },
-            |m: &mut RpcResponse| { &mut m.content },
+            "image_id",
+            |m: &PrepareRootfsResponse| { &m.image_id },
+            |m: &mut PrepareRootfsResponse| { &mut m.image_id },
         ));
-        ::protobuf::reflect::GeneratedMessageDescriptorData::new_2::<RpcResponse>(
-            "RpcResponse",
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "fs_type",
+            |m: &PrepareRootfsResponse| { &m.fs_type },
+            |m: &mut PrepareRootfsResponse| { &mut m.fs_type },
+        ));
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "image_size",
+            |m: &PrepareRootfsResponse| { &m.image_size },
+            |m: &mut PrepareRootfsResponse| { &mut m.image_size },
+        ));
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "block_size",
+            |m: &PrepareRootfsResponse| { &m.block_size },
+            |m: &mut PrepareRootfsResponse| { &mut m.block_size },
+        ));
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "rootfs_digest",
+            |m: &PrepareRootfsResponse| { &m.rootfs_digest },
+            |m: &mut PrepareRootfsResponse| { &mut m.rootfs_digest },
+        ));
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "oci_config_json",
+            |m: &PrepareRootfsResponse| { &m.oci_config_json },
+            |m: &mut PrepareRootfsResponse| { &mut m.oci_config_json },
+        ));
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "source_rd_addr",
+            |m: &PrepareRootfsResponse| { &m.source_rd_addr },
+            |m: &mut PrepareRootfsResponse| { &mut m.source_rd_addr },
+        ));
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "share_id",
+            |m: &PrepareRootfsResponse| { &m.share_id },
+            |m: &mut PrepareRootfsResponse| { &mut m.share_id },
+        ));
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "page_count",
+            |m: &PrepareRootfsResponse| { &m.page_count },
+            |m: &mut PrepareRootfsResponse| { &mut m.page_count },
+        ));
+        ::protobuf::reflect::GeneratedMessageDescriptorData::new_2::<PrepareRootfsResponse>(
+            "PrepareRootfsResponse",
             fields,
             oneofs,
         )
     }
 }
 
-impl ::protobuf::Message for RpcResponse {
-    const NAME: &'static str = "RpcResponse";
+impl ::protobuf::Message for PrepareRootfsResponse {
+    const NAME: &'static str = "PrepareRootfsResponse";
 
     fn is_initialized(&self) -> bool {
         true
@@ -195,305 +251,31 @@ impl ::protobuf::Message for RpcResponse {
         while let Some(tag) = is.read_raw_tag_or_eof()? {
             match tag {
                 10 => {
-                    self.content = is.read_string()?;
+                    self.image_id = is.read_string()?;
                 },
-                tag => {
-                    ::protobuf::rt::read_unknown_or_skip_group(tag, is, self.special_fields.mut_unknown_fields())?;
-                },
-            };
-        }
-        ::std::result::Result::Ok(())
-    }
-
-    // Compute sizes of nested messages
-    #[allow(unused_variables)]
-    fn compute_size(&self) -> u64 {
-        let mut my_size = 0;
-        if !self.content.is_empty() {
-            my_size += ::protobuf::rt::string_size(1, &self.content);
-        }
-        my_size += ::protobuf::rt::unknown_fields_size(self.special_fields.unknown_fields());
-        self.special_fields.cached_size().set(my_size as u32);
-        my_size
-    }
-
-    fn write_to_with_cached_sizes(&self, os: &mut ::protobuf::CodedOutputStream<'_>) -> ::protobuf::Result<()> {
-        if !self.content.is_empty() {
-            os.write_string(1, &self.content)?;
-        }
-        os.write_unknown_fields(self.special_fields.unknown_fields())?;
-        ::std::result::Result::Ok(())
-    }
-
-    fn special_fields(&self) -> &::protobuf::SpecialFields {
-        &self.special_fields
-    }
-
-    fn mut_special_fields(&mut self) -> &mut ::protobuf::SpecialFields {
-        &mut self.special_fields
-    }
-
-    fn new() -> RpcResponse {
-        RpcResponse::new()
-    }
-
-    fn clear(&mut self) {
-        self.content.clear();
-        self.special_fields.clear();
-    }
-
-    fn default_instance() -> &'static RpcResponse {
-        static instance: RpcResponse = RpcResponse {
-            content: ::std::string::String::new(),
-            special_fields: ::protobuf::SpecialFields::new(),
-        };
-        &instance
-    }
-}
-
-impl ::protobuf::MessageFull for RpcResponse {
-    fn descriptor() -> ::protobuf::reflect::MessageDescriptor {
-        static descriptor: ::protobuf::rt::Lazy<::protobuf::reflect::MessageDescriptor> = ::protobuf::rt::Lazy::new();
-        descriptor.get(|| file_descriptor().message_by_package_relative_name("RpcResponse").unwrap()).clone()
-    }
-}
-
-impl ::std::fmt::Display for RpcResponse {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        ::protobuf::text_format::fmt(self, f)
-    }
-}
-
-impl ::protobuf::reflect::ProtobufValue for RpcResponse {
-    type RuntimeType = ::protobuf::reflect::rt::RuntimeTypeMessage<Self>;
-}
-
-// @@protoc_insertion_point(message:image.GetFileRpcRequest)
-#[derive(PartialEq,Clone,Default,Debug)]
-pub struct GetFileRpcRequest {
-    // message fields
-    // @@protoc_insertion_point(field:image.GetFileRpcRequest.rd_addr)
-    pub rd_addr: u64,
-    // @@protoc_insertion_point(field:image.GetFileRpcRequest.ipa_start)
-    pub ipa_start: u64,
-    // @@protoc_insertion_point(field:image.GetFileRpcRequest.ipa_size)
-    pub ipa_size: u64,
-    // @@protoc_insertion_point(field:image.GetFileRpcRequest.file_path)
-    pub file_path: ::std::string::String,
-    // special fields
-    // @@protoc_insertion_point(special_field:image.GetFileRpcRequest.special_fields)
-    pub special_fields: ::protobuf::SpecialFields,
-}
-
-impl<'a> ::std::default::Default for &'a GetFileRpcRequest {
-    fn default() -> &'a GetFileRpcRequest {
-        <GetFileRpcRequest as ::protobuf::Message>::default_instance()
-    }
-}
-
-impl GetFileRpcRequest {
-    pub fn new() -> GetFileRpcRequest {
-        ::std::default::Default::default()
-    }
-
-    fn generated_message_descriptor_data() -> ::protobuf::reflect::GeneratedMessageDescriptorData {
-        let mut fields = ::std::vec::Vec::with_capacity(4);
-        let mut oneofs = ::std::vec::Vec::with_capacity(0);
-        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
-            "rd_addr",
-            |m: &GetFileRpcRequest| { &m.rd_addr },
-            |m: &mut GetFileRpcRequest| { &mut m.rd_addr },
-        ));
-        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
-            "ipa_start",
-            |m: &GetFileRpcRequest| { &m.ipa_start },
-            |m: &mut GetFileRpcRequest| { &mut m.ipa_start },
-        ));
-        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
-            "ipa_size",
-            |m: &GetFileRpcRequest| { &m.ipa_size },
-            |m: &mut GetFileRpcRequest| { &mut m.ipa_size },
-        ));
-        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
-            "file_path",
-            |m: &GetFileRpcRequest| { &m.file_path },
-            |m: &mut GetFileRpcRequest| { &mut m.file_path },
-        ));
-        ::protobuf::reflect::GeneratedMessageDescriptorData::new_2::<GetFileRpcRequest>(
-            "GetFileRpcRequest",
-            fields,
-            oneofs,
-        )
-    }
-}
-
-impl ::protobuf::Message for GetFileRpcRequest {
-    const NAME: &'static str = "GetFileRpcRequest";
-
-    fn is_initialized(&self) -> bool {
-        true
-    }
-
-    fn merge_from(&mut self, is: &mut ::protobuf::CodedInputStream<'_>) -> ::protobuf::Result<()> {
-        while let Some(tag) = is.read_raw_tag_or_eof()? {
-            match tag {
-                8 => {
-                    self.rd_addr = is.read_uint64()?;
-                },
-                16 => {
-                    self.ipa_start = is.read_uint64()?;
+                18 => {
+                    self.fs_type = is.read_string()?;
                 },
                 24 => {
-                    self.ipa_size = is.read_uint64()?;
+                    self.image_size = is.read_uint64()?;
                 },
-                34 => {
-                    self.file_path = is.read_string()?;
+                32 => {
+                    self.block_size = is.read_uint64()?;
                 },
-                tag => {
-                    ::protobuf::rt::read_unknown_or_skip_group(tag, is, self.special_fields.mut_unknown_fields())?;
+                42 => {
+                    self.rootfs_digest = is.read_string()?;
                 },
-            };
-        }
-        ::std::result::Result::Ok(())
-    }
-
-    // Compute sizes of nested messages
-    #[allow(unused_variables)]
-    fn compute_size(&self) -> u64 {
-        let mut my_size = 0;
-        if self.rd_addr != 0 {
-            my_size += ::protobuf::rt::uint64_size(1, self.rd_addr);
-        }
-        if self.ipa_start != 0 {
-            my_size += ::protobuf::rt::uint64_size(2, self.ipa_start);
-        }
-        if self.ipa_size != 0 {
-            my_size += ::protobuf::rt::uint64_size(3, self.ipa_size);
-        }
-        if !self.file_path.is_empty() {
-            my_size += ::protobuf::rt::string_size(4, &self.file_path);
-        }
-        my_size += ::protobuf::rt::unknown_fields_size(self.special_fields.unknown_fields());
-        self.special_fields.cached_size().set(my_size as u32);
-        my_size
-    }
-
-    fn write_to_with_cached_sizes(&self, os: &mut ::protobuf::CodedOutputStream<'_>) -> ::protobuf::Result<()> {
-        if self.rd_addr != 0 {
-            os.write_uint64(1, self.rd_addr)?;
-        }
-        if self.ipa_start != 0 {
-            os.write_uint64(2, self.ipa_start)?;
-        }
-        if self.ipa_size != 0 {
-            os.write_uint64(3, self.ipa_size)?;
-        }
-        if !self.file_path.is_empty() {
-            os.write_string(4, &self.file_path)?;
-        }
-        os.write_unknown_fields(self.special_fields.unknown_fields())?;
-        ::std::result::Result::Ok(())
-    }
-
-    fn special_fields(&self) -> &::protobuf::SpecialFields {
-        &self.special_fields
-    }
-
-    fn mut_special_fields(&mut self) -> &mut ::protobuf::SpecialFields {
-        &mut self.special_fields
-    }
-
-    fn new() -> GetFileRpcRequest {
-        GetFileRpcRequest::new()
-    }
-
-    fn clear(&mut self) {
-        self.rd_addr = 0;
-        self.ipa_start = 0;
-        self.ipa_size = 0;
-        self.file_path.clear();
-        self.special_fields.clear();
-    }
-
-    fn default_instance() -> &'static GetFileRpcRequest {
-        static instance: GetFileRpcRequest = GetFileRpcRequest {
-            rd_addr: 0,
-            ipa_start: 0,
-            ipa_size: 0,
-            file_path: ::std::string::String::new(),
-            special_fields: ::protobuf::SpecialFields::new(),
-        };
-        &instance
-    }
-}
-
-impl ::protobuf::MessageFull for GetFileRpcRequest {
-    fn descriptor() -> ::protobuf::reflect::MessageDescriptor {
-        static descriptor: ::protobuf::rt::Lazy<::protobuf::reflect::MessageDescriptor> = ::protobuf::rt::Lazy::new();
-        descriptor.get(|| file_descriptor().message_by_package_relative_name("GetFileRpcRequest").unwrap()).clone()
-    }
-}
-
-impl ::std::fmt::Display for GetFileRpcRequest {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        ::protobuf::text_format::fmt(self, f)
-    }
-}
-
-impl ::protobuf::reflect::ProtobufValue for GetFileRpcRequest {
-    type RuntimeType = ::protobuf::reflect::rt::RuntimeTypeMessage<Self>;
-}
-
-// @@protoc_insertion_point(message:image.GetFileResponse)
-#[derive(PartialEq,Clone,Default,Debug)]
-pub struct GetFileResponse {
-    // message fields
-    // @@protoc_insertion_point(field:image.GetFileResponse.size)
-    pub size: u64,
-    // special fields
-    // @@protoc_insertion_point(special_field:image.GetFileResponse.special_fields)
-    pub special_fields: ::protobuf::SpecialFields,
-}
-
-impl<'a> ::std::default::Default for &'a GetFileResponse {
-    fn default() -> &'a GetFileResponse {
-        <GetFileResponse as ::protobuf::Message>::default_instance()
-    }
-}
-
-impl GetFileResponse {
-    pub fn new() -> GetFileResponse {
-        ::std::default::Default::default()
-    }
-
-    fn generated_message_descriptor_data() -> ::protobuf::reflect::GeneratedMessageDescriptorData {
-        let mut fields = ::std::vec::Vec::with_capacity(1);
-        let mut oneofs = ::std::vec::Vec::with_capacity(0);
-        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
-            "size",
-            |m: &GetFileResponse| { &m.size },
-            |m: &mut GetFileResponse| { &mut m.size },
-        ));
-        ::protobuf::reflect::GeneratedMessageDescriptorData::new_2::<GetFileResponse>(
-            "GetFileResponse",
-            fields,
-            oneofs,
-        )
-    }
-}
-
-impl ::protobuf::Message for GetFileResponse {
-    const NAME: &'static str = "GetFileResponse";
-
-    fn is_initialized(&self) -> bool {
-        true
-    }
-
-    fn merge_from(&mut self, is: &mut ::protobuf::CodedInputStream<'_>) -> ::protobuf::Result<()> {
-        while let Some(tag) = is.read_raw_tag_or_eof()? {
-            match tag {
-                8 => {
-                    self.size = is.read_uint64()?;
+                58 => {
+                    self.oci_config_json = is.read_bytes()?;
+                },
+                64 => {
+                    self.source_rd_addr = is.read_uint64()?;
+                },
+                72 => {
+                    self.share_id = is.read_uint64()?;
+                },
+                80 => {
+                    self.page_count = is.read_uint64()?;
                 },
                 tag => {
                     ::protobuf::rt::read_unknown_or_skip_group(tag, is, self.special_fields.mut_unknown_fields())?;
@@ -507,8 +289,32 @@ impl ::protobuf::Message for GetFileResponse {
     #[allow(unused_variables)]
     fn compute_size(&self) -> u64 {
         let mut my_size = 0;
-        if self.size != 0 {
-            my_size += ::protobuf::rt::uint64_size(1, self.size);
+        if !self.image_id.is_empty() {
+            my_size += ::protobuf::rt::string_size(1, &self.image_id);
+        }
+        if !self.fs_type.is_empty() {
+            my_size += ::protobuf::rt::string_size(2, &self.fs_type);
+        }
+        if self.image_size != 0 {
+            my_size += ::protobuf::rt::uint64_size(3, self.image_size);
+        }
+        if self.block_size != 0 {
+            my_size += ::protobuf::rt::uint64_size(4, self.block_size);
+        }
+        if !self.rootfs_digest.is_empty() {
+            my_size += ::protobuf::rt::string_size(5, &self.rootfs_digest);
+        }
+        if !self.oci_config_json.is_empty() {
+            my_size += ::protobuf::rt::bytes_size(7, &self.oci_config_json);
+        }
+        if self.source_rd_addr != 0 {
+            my_size += ::protobuf::rt::uint64_size(8, self.source_rd_addr);
+        }
+        if self.share_id != 0 {
+            my_size += ::protobuf::rt::uint64_size(9, self.share_id);
+        }
+        if self.page_count != 0 {
+            my_size += ::protobuf::rt::uint64_size(10, self.page_count);
         }
         my_size += ::protobuf::rt::unknown_fields_size(self.special_fields.unknown_fields());
         self.special_fields.cached_size().set(my_size as u32);
@@ -516,8 +322,32 @@ impl ::protobuf::Message for GetFileResponse {
     }
 
     fn write_to_with_cached_sizes(&self, os: &mut ::protobuf::CodedOutputStream<'_>) -> ::protobuf::Result<()> {
-        if self.size != 0 {
-            os.write_uint64(1, self.size)?;
+        if !self.image_id.is_empty() {
+            os.write_string(1, &self.image_id)?;
+        }
+        if !self.fs_type.is_empty() {
+            os.write_string(2, &self.fs_type)?;
+        }
+        if self.image_size != 0 {
+            os.write_uint64(3, self.image_size)?;
+        }
+        if self.block_size != 0 {
+            os.write_uint64(4, self.block_size)?;
+        }
+        if !self.rootfs_digest.is_empty() {
+            os.write_string(5, &self.rootfs_digest)?;
+        }
+        if !self.oci_config_json.is_empty() {
+            os.write_bytes(7, &self.oci_config_json)?;
+        }
+        if self.source_rd_addr != 0 {
+            os.write_uint64(8, self.source_rd_addr)?;
+        }
+        if self.share_id != 0 {
+            os.write_uint64(9, self.share_id)?;
+        }
+        if self.page_count != 0 {
+            os.write_uint64(10, self.page_count)?;
         }
         os.write_unknown_fields(self.special_fields.unknown_fields())?;
         ::std::result::Result::Ok(())
@@ -531,52 +361,69 @@ impl ::protobuf::Message for GetFileResponse {
         &mut self.special_fields
     }
 
-    fn new() -> GetFileResponse {
-        GetFileResponse::new()
+    fn new() -> PrepareRootfsResponse {
+        PrepareRootfsResponse::new()
     }
 
     fn clear(&mut self) {
-        self.size = 0;
+        self.image_id.clear();
+        self.fs_type.clear();
+        self.image_size = 0;
+        self.block_size = 0;
+        self.rootfs_digest.clear();
+        self.oci_config_json.clear();
+        self.source_rd_addr = 0;
+        self.share_id = 0;
+        self.page_count = 0;
         self.special_fields.clear();
     }
 
-    fn default_instance() -> &'static GetFileResponse {
-        static instance: GetFileResponse = GetFileResponse {
-            size: 0,
+    fn default_instance() -> &'static PrepareRootfsResponse {
+        static instance: PrepareRootfsResponse = PrepareRootfsResponse {
+            image_id: ::std::string::String::new(),
+            fs_type: ::std::string::String::new(),
+            image_size: 0,
+            block_size: 0,
+            rootfs_digest: ::std::string::String::new(),
+            oci_config_json: ::std::vec::Vec::new(),
+            source_rd_addr: 0,
+            share_id: 0,
+            page_count: 0,
             special_fields: ::protobuf::SpecialFields::new(),
         };
         &instance
     }
 }
 
-impl ::protobuf::MessageFull for GetFileResponse {
+impl ::protobuf::MessageFull for PrepareRootfsResponse {
     fn descriptor() -> ::protobuf::reflect::MessageDescriptor {
         static descriptor: ::protobuf::rt::Lazy<::protobuf::reflect::MessageDescriptor> = ::protobuf::rt::Lazy::new();
-        descriptor.get(|| file_descriptor().message_by_package_relative_name("GetFileResponse").unwrap()).clone()
+        descriptor.get(|| file_descriptor().message_by_package_relative_name("PrepareRootfsResponse").unwrap()).clone()
     }
 }
 
-impl ::std::fmt::Display for GetFileResponse {
+impl ::std::fmt::Display for PrepareRootfsResponse {
     fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
         ::protobuf::text_format::fmt(self, f)
     }
 }
 
-impl ::protobuf::reflect::ProtobufValue for GetFileResponse {
+impl ::protobuf::reflect::ProtobufValue for PrepareRootfsResponse {
     type RuntimeType = ::protobuf::reflect::rt::RuntimeTypeMessage<Self>;
 }
 
 static file_descriptor_proto_data: &'static [u8] = b"\
-    \n\x0bimage.proto\x12\x05image\"&\n\nRpcRequest\x12\x18\n\x07content\x18\
-    \x01\x20\x01(\tR\x07content\"'\n\x0bRpcResponse\x12\x18\n\x07content\x18\
-    \x01\x20\x01(\tR\x07content\"\x81\x01\n\x11GetFileRpcRequest\x12\x17\n\
-    \x07rd_addr\x18\x01\x20\x01(\x04R\x06rdAddr\x12\x1b\n\tipa_start\x18\x02\
-    \x20\x01(\x04R\x08ipaStart\x12\x19\n\x08ipa_size\x18\x03\x20\x01(\x04R\
-    \x07ipaSize\x12\x1b\n\tfile_path\x18\x04\x20\x01(\tR\x08filePath\"%\n\
-    \x0fGetFileResponse\x12\x12\n\x04size\x18\x01\x20\x01(\x04R\x04size2{\n\
-    \x07Greeter\x122\n\tsay_hello\x12\x11.image.RpcRequest\x1a\x12.image.Rpc\
-    Response\x12<\n\x08get_file\x12\x18.image.GetFileRpcRequest\x1a\x16.imag\
-    e.GetFileResponseb\x06proto3\
+    \n\x0bimage.proto\x12\x05image\"3\n\x14PrepareRootfsRequest\x12\x1b\n\ti\
+    mage_ref\x18\x01\x20\x01(\tR\x08imageRef\"\xb6\x02\n\x15PrepareRootfsRes\
+    ponse\x12\x19\n\x08image_id\x18\x01\x20\x01(\tR\x07imageId\x12\x17\n\x07\
+    fs_type\x18\x02\x20\x01(\tR\x06fsType\x12\x1d\n\nimage_size\x18\x03\x20\
+    \x01(\x04R\timageSize\x12\x1d\n\nblock_size\x18\x04\x20\x01(\x04R\tblock\
+    Size\x12#\n\rrootfs_digest\x18\x05\x20\x01(\tR\x0crootfsDigest\x12&\n\
+    \x0foci_config_json\x18\x07\x20\x01(\x0cR\rociConfigJson\x12$\n\x0esourc\
+    e_rd_addr\x18\x08\x20\x01(\x04R\x0csourceRdAddr\x12\x19\n\x08share_id\
+    \x18\t\x20\x01(\x04R\x07shareId\x12\x1d\n\npage_count\x18\n\x20\x01(\x04\
+    R\tpageCount2V\n\x07Greeter\x12K\n\x0eprepare_rootfs\x12\x1b.image.Prepa\
+    reRootfsRequest\x1a\x1c.image.PrepareRootfsResponseb\x06proto3\
 ";
 
 /// `FileDescriptorProto` object which was a source for this generated file
@@ -594,11 +441,9 @@ pub fn file_descriptor() -> &'static ::protobuf::reflect::FileDescriptor {
     file_descriptor.get(|| {
         let generated_file_descriptor = generated_file_descriptor_lazy.get(|| {
             let mut deps = ::std::vec::Vec::with_capacity(0);
-            let mut messages = ::std::vec::Vec::with_capacity(4);
-            messages.push(RpcRequest::generated_message_descriptor_data());
-            messages.push(RpcResponse::generated_message_descriptor_data());
-            messages.push(GetFileRpcRequest::generated_message_descriptor_data());
-            messages.push(GetFileResponse::generated_message_descriptor_data());
+            let mut messages = ::std::vec::Vec::with_capacity(2);
+            messages.push(PrepareRootfsRequest::generated_message_descriptor_data());
+            messages.push(PrepareRootfsResponse::generated_message_descriptor_data());
             let mut enums = ::std::vec::Vec::with_capacity(0);
             ::protobuf::reflect::GeneratedFileDescriptor::new_generated(
                 file_descriptor_proto(),

@@ -1,4 +1,3 @@
-use anyhow::anyhow;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -25,14 +24,15 @@ impl LayerStore {
         let mut next = 0;
         for path in paths {
             let entry_path = path?;
-            // these should not fail since each file name must be an index.
-            // If for some reason, file name is not an index it will not
-            // cause any conflicts with new and existing layers.
-            let n: usize = entry_path
-                .file_name()
-                .to_str()
-                .ok_or(anyhow!("entry path isn't valid utf"))?
-                .parse()?;
+            if !entry_path.file_type()?.is_dir() {
+                continue;
+            }
+            let Some(file_name) = entry_path.file_name().to_str().map(ToOwned::to_owned) else {
+                continue;
+            };
+            let Ok(n) = file_name.parse::<usize>() else {
+                continue;
+            };
             if n >= next {
                 next = n + 1;
             }

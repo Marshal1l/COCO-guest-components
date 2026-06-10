@@ -55,7 +55,7 @@ sigstore = {git = "https://github.com/sigstore/sigstore-rs.git", rev = "c39c519"
 strum.workspace = true
 strum_macros = "0.27"
 tokio-util = "0.7.14"
-tokio.workspace = true
+tokio = {workspace = true, features = ["time"]}
 tonic = {workspace = true, optional = true}
 ttrpc = {workspace = true, features = ["async"], optional = true}
 url = "2.5.4"

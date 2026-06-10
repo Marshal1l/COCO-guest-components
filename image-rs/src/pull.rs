@@ -10,17 +10,26 @@ use crate::meta_store::MetaStore;
 use crate::stream::stream_processing;
 use anyhow::{anyhow, bail, Context, Result};
 use futures_util::stream::{self, StreamExt, TryStreamExt};
+use log::{info, warn};
 use oci_client::client::{Certificate, CertificateEncoding, ClientConfig};
 use oci_client::manifest::{OciDescriptor, OciImageManifest};
 use oci_client::{secrets::RegistryAuth, Client, Reference};
 use std::collections::BTreeMap;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs::{self, File};
-use tokio::io::{AsyncRead, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
+use tokio::time::{sleep, timeout};
 use tokio_util::io::StreamReader;
+
+const LAYER_PULL_ATTEMPTS: usize = 3;
+const LAYER_STREAM_TIMEOUT_SECS: u64 = 60;
+const LAYER_COPY_TIMEOUT_SECS: u64 = 120;
+const LAYER_UNPACK_TIMEOUT_SECS: u64 = 180;
 /// The PullClient connects to remote OCI registry, pulls the container image,
 /// and save the image layers under the layer store and return the layer meta info.
 pub struct PullClient<'a> {
@@ -85,7 +94,7 @@ impl<'a> PullClient<'a> {
         self.client
             .pull_manifest_and_config(&self.reference, self.auth)
             .await
-            .map_err(|e| anyhow!("failed to pull manifest {}", e.to_string()))
+            .map_err(|e| anyhow!("failed to pull manifest: {e:?}"))
     }
 
     /// pull_bootstrap pulls a nydus image's bootstrap layer.
@@ -118,21 +127,14 @@ impl<'a> PullClient<'a> {
         let layer_metas: Vec<(usize, LayerMeta)> = stream::iter(layer_descs)
             .enumerate()
             .map(|(i, layer)| async move {
-                let layer_stream = self
-                    .client
-                    .pull_blob_stream(&self.reference, &layer)
-                    .await
-                    .map_err(|e| anyhow!("failed to async pull blob stream {}", e.to_string()))?;
-                let layer_reader = StreamReader::new(layer_stream.stream);
-                self.async_handle_layer(
+                self.pull_layer_with_retry(
+                    i,
                     layer,
                     diff_ids[i].clone(),
                     decrypt_config,
-                    layer_reader,
                     meta_store.clone(),
                 )
                 .await
-                .map_err(|e| anyhow!("failed to handle layer: {:?}", e))
                 .map(|layer_meta| (i, layer_meta))
             })
             .buffer_unordered(self.max_concurrent_download)
@@ -143,12 +145,111 @@ impl<'a> PullClient<'a> {
         Ok(sorted_layer_metas)
     }
 
+    async fn pull_layer_with_retry(
+        &self,
+        index: usize,
+        layer: OciDescriptor,
+        diff_id: String,
+        decrypt_config: &Option<&str>,
+        meta_store: Arc<RwLock<MetaStore>>,
+    ) -> Result<LayerMeta> {
+        let mut last_error = None;
+
+        for attempt in 1..=LAYER_PULL_ATTEMPTS {
+            if let Some(layer_meta) = meta_store.read().await.layer_db.get(&layer.digest) {
+                info!(
+                    "image layer cache hit: index={}, digest={}, store_path={}",
+                    index, layer.digest, layer_meta.store_path
+                );
+                return Ok(layer_meta.clone());
+            }
+
+            match self
+                .pull_layer_once(
+                    index,
+                    layer.clone(),
+                    diff_id.clone(),
+                    decrypt_config,
+                    meta_store.clone(),
+                )
+                .await
+            {
+                Ok(layer_meta) => return Ok(layer_meta),
+                Err(err) => {
+                    warn!(
+                        "image layer pull attempt {}/{} failed: index={}, digest={}, error={:#}",
+                        attempt, LAYER_PULL_ATTEMPTS, index, layer.digest, err
+                    );
+                    last_error = Some(format!("{:#}", err));
+                    if attempt < LAYER_PULL_ATTEMPTS {
+                        sleep(Duration::from_secs((attempt as u64) * 2)).await;
+                    }
+                }
+            }
+        }
+
+        bail!(
+            "failed to pull image layer after {} attempts: index={}, digest={}, last_error={}",
+            LAYER_PULL_ATTEMPTS,
+            index,
+            layer.digest,
+            last_error.unwrap_or_else(|| "unknown".to_string())
+        )
+    }
+
+    async fn pull_layer_once(
+        &self,
+        index: usize,
+        layer: OciDescriptor,
+        diff_id: String,
+        decrypt_config: &Option<&str>,
+        meta_store: Arc<RwLock<MetaStore>>,
+    ) -> Result<LayerMeta> {
+        let digest = layer.digest.clone();
+        let media_type = layer.media_type.clone();
+        let expected_size = layer.size;
+
+        info!(
+            "image layer pull start: index={}, digest={}, size={}, media_type={}",
+            index, digest, expected_size, media_type
+        );
+        let layer_stream = timeout(
+            Duration::from_secs(LAYER_STREAM_TIMEOUT_SECS),
+            self.client.pull_blob_stream(&self.reference, &layer),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "timed out opening layer blob stream after {}s",
+                LAYER_STREAM_TIMEOUT_SECS
+            )
+        })?
+        .map_err(|e| anyhow!("failed to async pull blob stream: {e:?}"))?;
+
+        let layer_reader = StreamReader::new(layer_stream.stream);
+        let layer_meta = self
+            .async_handle_layer(layer, diff_id, decrypt_config, layer_reader, meta_store)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to handle image layer index={}, digest={}, size={}, media_type={}",
+                    index, digest, expected_size, media_type
+                )
+            })?;
+        info!(
+            "image layer pull complete: index={}, digest={}, store_path={}, uncompressed_digest={}",
+            index, digest, layer_meta.store_path, layer_meta.uncompressed_digest
+        );
+
+        Ok(layer_meta)
+    }
+
     async fn async_handle_layer(
         &self,
         layer: OciDescriptor,
         diff_id: String,
         decrypt_config: &Option<&str>,
-        mut layer_reader: (impl tokio::io::AsyncRead + Unpin + Send),
+        mut layer_reader: impl tokio::io::AsyncRead + Unpin + Send,
         ms: Arc<RwLock<MetaStore>>,
     ) -> Result<LayerMeta> {
         // if layer is already in /run/image-rs/layers,do not need to pull
@@ -157,99 +258,138 @@ impl<'a> PullClient<'a> {
         }
 
         let destination = self.layer_store.new_layer_store_path();
-        let mut layer_meta = LayerMeta {
-            compressed_digest: layer.digest.clone(),
-            store_path: destination.display().to_string(),
-            ..Default::default()
-        };
-        // bail!(
-        //     "destination:{}\n\n\n\n\n\n",
-        //     destination.display().to_string()
-        // );
-        //////////////////////////////////////
-        //////////////////////////////////////
-        let decryptor = Decryptor::from_media_type(&layer.media_type);
+        let compressed_path = PathBuf::from(format!("{}.compress", &destination.display()));
+        let digest = layer.digest.clone();
+        let expected_size = layer.size;
+        let store_path = destination.display().to_string();
 
-        // There are two types of layers:
-        // 1. Compressed layer = Compress(Layer Data)
-        // 2. Encrypted+Compressed layer = Compress(Encrypt(Layer Data))
-        if decryptor.is_encrypted() {
-            let decrypt_key = tokio::task::spawn_blocking({
-                let decryptor = decryptor.clone();
-                let layer = layer.clone();
-                let decrypt_config = decrypt_config.as_ref().map(|inner| inner.to_string());
-                move || {
-                    decryptor
-                        .get_decrypt_key(&layer, &decrypt_config.as_deref())
-                        .context("failed to get decrypt key")
+        let result = async {
+            let mut layer_meta = LayerMeta {
+                compressed_digest: digest.clone(),
+                store_path,
+                ..Default::default()
+            };
+            let decryptor = Decryptor::from_media_type(&layer.media_type);
+
+            // There are two types of layers:
+            // 1. Compressed layer = Compress(Layer Data)
+            // 2. Encrypted+Compressed layer = Compress(Encrypt(Layer Data))
+            if decryptor.is_encrypted() {
+                let decrypt_key = tokio::task::spawn_blocking({
+                    let decryptor = decryptor.clone();
+                    let layer = layer.clone();
+                    let decrypt_config = decrypt_config.as_ref().map(|inner| inner.to_string());
+                    move || {
+                        decryptor
+                            .get_decrypt_key(&layer, &decrypt_config.as_deref())
+                            .context("failed to get decrypt key")
+                    }
+                })
+                .await
+                .context("decryptor thread failed to execute")??;
+                let plaintext_layer = decryptor
+                    .async_get_plaintext_layer(layer_reader, &layer, &decrypt_key)
+                    .map_err(|e| anyhow!("failed to async_get_plaintext_layer: {:?}", e))?;
+                layer_meta.uncompressed_digest = self
+                    .async_decompress_unpack_layer_with_timeout(
+                        plaintext_layer,
+                        &diff_id,
+                        &decryptor.media_type,
+                        &destination,
+                    )
+                    .await?;
+                layer_meta.encrypted = true;
+            } else {
+                if let Some(parent) = &compressed_path.parent() {
+                    fs::create_dir_all(parent)
+                        .await
+                        .context("failed to create compressed layer parent directory")?;
                 }
-            })
-            .await
-            .context("decryptor thread failed to execute")??;
-            let plaintext_layer = decryptor
-                .async_get_plaintext_layer(layer_reader, &layer, &decrypt_key)
-                .map_err(|e| anyhow!("failed to async_get_plaintext_layer: {:?}", e))?;
-            layer_meta.uncompressed_digest = self
-                .async_decompress_unpack_layer(
-                    plaintext_layer,
-                    &diff_id,
-                    &decryptor.media_type,
-                    &destination,
-                )
-                .await?;
-            layer_meta.encrypted = true;
-        } else {
-            //////////////////////////
-            let compressed_path = PathBuf::from(format!("{}.compress", &destination.display()));
-            //bail!("{}", compressed_path.display().to_string());
-            if let Some(parent) = &compressed_path.parent() {
-                fs::create_dir_all(parent)
+                info!(
+                    "saving compressed image layer: digest={}, path={}, expected_size={}",
+                    digest,
+                    compressed_path.display(),
+                    expected_size
+                );
+                let mut compressed_file = File::create(&compressed_path)
                     .await
-                    .context("Failed to create parent directories")?;
-            }
-            let mut compressed_file = File::create(&compressed_path)
-                .await
-                .context("Failed to create compressed file")?;
+                    .context("failed to create compressed layer file")?;
 
-            tokio::io::copy(&mut layer_reader, &mut compressed_file)
-                .await
-                .context("failed to save compressed layer")?;
-            compressed_file
-                .flush()
-                .await
-                .context("failed to flush compressed file")?;
-            // 新增：重新打开保存的压缩文件作为新的 layer_reader
-            let layer_reader = File::open(&compressed_path)
-                .await
-                .context("failed to open compressed file for reading")?;
-            //////////////////////////
-            layer_meta.uncompressed_digest = self
-                .async_decompress_unpack_layer(
-                    layer_reader,
-                    &diff_id,
-                    &layer.media_type,
-                    &destination,
+                let copied = timeout(
+                    Duration::from_secs(LAYER_COPY_TIMEOUT_SECS),
+                    tokio::io::copy(&mut layer_reader, &mut compressed_file),
                 )
-                .await?;
-        }
+                .await
+                .map_err(|_| {
+                    anyhow!(
+                        "timed out saving compressed layer after {}s",
+                        LAYER_COPY_TIMEOUT_SECS
+                    )
+                })?
+                .context("failed to save compressed layer")?;
+                compressed_file
+                    .flush()
+                    .await
+                    .context("failed to flush compressed layer file")?;
+                drop(compressed_file);
 
-        // uncompressed digest should equal to the diff_ids in image_config.
-        if layer_meta.uncompressed_digest != diff_id {
-            bail!(
-                "unequal uncompressed digest {:?} config diff_id {:?}",
-                layer_meta.uncompressed_digest,
-                diff_id
-            );
-        }
+                if expected_size > 0 && copied != expected_size as u64 {
+                    bail!(
+                        "compressed layer size mismatch for {}: expected={}, copied={}",
+                        digest,
+                        expected_size,
+                        copied
+                    );
+                }
+                info!(
+                    "saved compressed image layer: digest={}, bytes={}, path={}",
+                    digest,
+                    copied,
+                    compressed_path.display()
+                );
 
-        Ok(layer_meta)
+                let layer_reader = File::open(&compressed_path)
+                    .await
+                    .context("failed to open compressed layer file for unpacking")?;
+                layer_meta.uncompressed_digest = self
+                    .async_decompress_unpack_layer_with_timeout(
+                        layer_reader,
+                        &diff_id,
+                        &layer.media_type,
+                        &destination,
+                    )
+                    .await?;
+
+                remove_file_if_exists(&compressed_path).await;
+            }
+
+            // uncompressed digest should equal to the diff_ids in image_config.
+            if layer_meta.uncompressed_digest != diff_id {
+                bail!(
+                    "unequal uncompressed digest {:?} config diff_id {:?}",
+                    layer_meta.uncompressed_digest,
+                    diff_id
+                );
+            }
+
+            Ok(layer_meta)
+        }
+        .await;
+
+        match result {
+            Ok(layer_meta) => Ok(layer_meta),
+            Err(err) => {
+                cleanup_partial_layer(&destination, &compressed_path).await;
+                Err(err)
+            }
+        }
     }
 
     /// Decompress and unpack layer data. The returned value is the
     /// digest of the uncompressed layer.
     async fn async_decompress_unpack_layer(
         &self,
-        input_reader: (impl tokio::io::AsyncRead + Unpin + Send),
+        input_reader: impl tokio::io::AsyncRead + Unpin + Send,
         diff_id: &str,
         media_type: &str,
         destination: &Path,
@@ -257,6 +397,47 @@ impl<'a> PullClient<'a> {
         let decoder = Compression::try_from(media_type)?;
         let async_decoder = decoder.async_decompress(input_reader);
         stream_processing(async_decoder, diff_id, destination).await
+    }
+
+    async fn async_decompress_unpack_layer_with_timeout(
+        &self,
+        input_reader: impl tokio::io::AsyncRead + Unpin + Send,
+        diff_id: &str,
+        media_type: &str,
+        destination: &Path,
+    ) -> Result<String> {
+        timeout(
+            Duration::from_secs(LAYER_UNPACK_TIMEOUT_SECS),
+            self.async_decompress_unpack_layer(input_reader, diff_id, media_type, destination),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "timed out decompressing/unpacking layer after {}s",
+                LAYER_UNPACK_TIMEOUT_SECS
+            )
+        })?
+    }
+}
+
+async fn cleanup_partial_layer(destination: &Path, compressed_path: &Path) {
+    remove_file_if_exists(compressed_path).await;
+    match fs::remove_dir_all(destination).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => warn!(
+            "failed to remove partial image layer directory {}: {:#}",
+            destination.display(),
+            err
+        ),
+    }
+}
+
+async fn remove_file_if_exists(path: &Path) {
+    match fs::remove_file(path).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => warn!("failed to remove temporary file {}: {:#}", path.display(), err),
     }
 }
 

@@ -2,25 +2,19 @@ use anyhow::{Context, Result};
 use hyper_util::rt::TokioIo;
 use image::greeter_client::GreeterClient;
 use log::{error, info};
-use std::path::{Path, PathBuf};
 use tokio_vsock::{VsockAddr, VsockStream};
 use tonic::{
     transport::{Channel, Endpoint, Uri},
-    Request, Response,
+    Request,
 };
 use tower::service_fn;
-mod image_ioctl;
-use image_ioctl::ImageIoctl;
-use image_ioctl::RdIpaSizeData;
 pub mod image {
     tonic::include_proto!("image");
 }
-use std::fs;
 pub const SERVER_PORT: u32 = 54321;
 pub const SERVER_CID: u32 = 4;
 pub struct VsockClient {
     client: GreeterClient<Channel>,
-    image_ioctl: ImageIoctl,
 }
 impl VsockClient {
     pub async fn new() -> Result<Self> {
@@ -47,70 +41,26 @@ impl VsockClient {
             .context("failed to connect vsock endpoint")?;
 
         let client = GreeterClient::new(channel);
-        let image_ioctl = ImageIoctl::new();
 
-        Ok(Self {
-            client,
-            image_ioctl,
-        })
+        Ok(Self { client })
     }
 
-    pub async fn say_hello(&mut self, content: &str) -> Result<String> {
-        use image::RpcRequest;
-        let request = Request::new(RpcRequest {
-            content: content.to_string(),
-        });
-
-        let response = self
-            .client
-            .say_hello(request)
-            .await
-            .context("say_hello RPC failed")?;
-
-        Ok(response.into_inner().content)
-    }
-
-    pub async fn get_file(
+    pub async fn prepare_rootfs(
         &mut self,
-        dst_file_path: PathBuf,
-        src_file_path: PathBuf,
-    ) -> Result<String> {
-        use image::GetFileRpcRequest;
+        image_ref: &str,
+    ) -> Result<image::PrepareRootfsResponse> {
+        use image::PrepareRootfsRequest;
 
-        let rd_ipa_size_data = self
-            .image_ioctl
-            .get_rd_ipa()
-            .context("failed to get rd_ipa_size")?;
-
-        let request = Request::new(GetFileRpcRequest {
-            rd_addr: rd_ipa_size_data.rd_addr,
-            ipa_start: rd_ipa_size_data.ipa_start,
-            ipa_size: rd_ipa_size_data.ipa_size,
-            file_path: src_file_path.display().to_string(),
+        let request = Request::new(PrepareRootfsRequest {
+            image_ref: image_ref.to_string(),
         });
 
         let response = self
             .client
-            .get_file(request)
+            .prepare_rootfs(request)
             .await
-            .context("get_file RPC failed")?;
+            .context("prepare_rootfs RPC failed")?;
 
-        let file_size = response.into_inner().size;
-        // create the dir of guest_file_path
-        if let Some(parent) = dst_file_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if file_size > 0 {
-            self.image_ioctl
-                .write_file(dst_file_path.clone(), file_size)
-                .context("ioctl write_file failed")?;
-        } else {
-            anyhow::bail!("get_file: received invalid file_size (0)");
-        }
-
-        Ok(format!(
-            "Successfully fetched file ({} bytes) to {:?}",
-            file_size, dst_file_path
-        ))
+        Ok(response.into_inner())
     }
 }

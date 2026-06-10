@@ -3,19 +3,21 @@ syntax = "proto3";
 package image;
 
 service Greeter {
-  rpc say_hello(RpcRequest) returns (RpcResponse);
-  rpc get_file(GetFileRpcRequest) returns (GetFileResponse);
+  rpc prepare_rootfs(PrepareRootfsRequest) returns (PrepareRootfsResponse);
 }
 
-message RpcRequest { string content = 1; }
-
-message RpcResponse { string content = 1; }
-
-message GetFileRpcRequest {
-  uint64 rd_addr = 1;
-  uint64 ipa_start = 2;
-  uint64 ipa_size = 3;
-  string file_path = 4;
+message PrepareRootfsRequest {
+  string image_ref = 1;
 }
 
-message GetFileResponse { uint64 size = 1; }
+message PrepareRootfsResponse {
+  string image_id = 1;
+  string fs_type = 2;
+  uint64 image_size = 3;
+  uint64 block_size = 4;
+  string rootfs_digest = 5;
+  bytes oci_config_json = 7;
+  uint64 source_rd_addr = 8;
+  uint64 share_id = 9;
+  uint64 page_count = 10;
+}

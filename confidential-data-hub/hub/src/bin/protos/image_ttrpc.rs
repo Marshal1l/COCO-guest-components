@@ -31,46 +31,27 @@ impl GreeterClient {
         }
     }
 
-    pub async fn say_hello(&self, ctx: ttrpc::context::Context, req: &super::image::RpcRequest) -> ::ttrpc::Result<super::image::RpcResponse> {
-        let mut cres = super::image::RpcResponse::new();
-        ::ttrpc::async_client_request!(self, ctx, req, "image.Greeter", "say_hello", cres);
-    }
-
-    pub async fn get_file(&self, ctx: ttrpc::context::Context, req: &super::image::GetFileRpcRequest) -> ::ttrpc::Result<super::image::GetFileResponse> {
-        let mut cres = super::image::GetFileResponse::new();
-        ::ttrpc::async_client_request!(self, ctx, req, "image.Greeter", "get_file", cres);
+    pub async fn prepare_rootfs(&self, ctx: ttrpc::context::Context, req: &super::image::PrepareRootfsRequest) -> ::ttrpc::Result<super::image::PrepareRootfsResponse> {
+        let mut cres = super::image::PrepareRootfsResponse::new();
+        ::ttrpc::async_client_request!(self, ctx, req, "image.Greeter", "prepare_rootfs", cres);
     }
 }
 
-struct SayHelloMethod {
+struct PrepareRootfsMethod {
     service: Arc<dyn Greeter + Send + Sync>,
 }
 
 #[async_trait]
-impl ::ttrpc::r#async::MethodHandler for SayHelloMethod {
+impl ::ttrpc::r#async::MethodHandler for PrepareRootfsMethod {
     async fn handler(&self, ctx: ::ttrpc::r#async::TtrpcContext, req: ::ttrpc::Request) -> ::ttrpc::Result<::ttrpc::Response> {
-        ::ttrpc::async_request_handler!(self, ctx, req, image, RpcRequest, say_hello);
-    }
-}
-
-struct GetFileMethod {
-    service: Arc<dyn Greeter + Send + Sync>,
-}
-
-#[async_trait]
-impl ::ttrpc::r#async::MethodHandler for GetFileMethod {
-    async fn handler(&self, ctx: ::ttrpc::r#async::TtrpcContext, req: ::ttrpc::Request) -> ::ttrpc::Result<::ttrpc::Response> {
-        ::ttrpc::async_request_handler!(self, ctx, req, image, GetFileRpcRequest, get_file);
+        ::ttrpc::async_request_handler!(self, ctx, req, image, PrepareRootfsRequest, prepare_rootfs);
     }
 }
 
 #[async_trait]
 pub trait Greeter: Sync {
-    async fn say_hello(&self, _ctx: &::ttrpc::r#async::TtrpcContext, _: super::image::RpcRequest) -> ::ttrpc::Result<super::image::RpcResponse> {
-        Err(::ttrpc::Error::RpcStatus(::ttrpc::get_status(::ttrpc::Code::NOT_FOUND, "/image.Greeter/say_hello is not supported".to_string())))
-    }
-    async fn get_file(&self, _ctx: &::ttrpc::r#async::TtrpcContext, _: super::image::GetFileRpcRequest) -> ::ttrpc::Result<super::image::GetFileResponse> {
-        Err(::ttrpc::Error::RpcStatus(::ttrpc::get_status(::ttrpc::Code::NOT_FOUND, "/image.Greeter/get_file is not supported".to_string())))
+    async fn prepare_rootfs(&self, _ctx: &::ttrpc::r#async::TtrpcContext, _: super::image::PrepareRootfsRequest) -> ::ttrpc::Result<super::image::PrepareRootfsResponse> {
+        Err(::ttrpc::Error::RpcStatus(::ttrpc::get_status(::ttrpc::Code::NOT_FOUND, "/image.Greeter/prepare_rootfs is not supported".to_string())))
     }
 }
 
@@ -79,11 +60,8 @@ pub fn create_greeter(service: Arc<dyn Greeter + Send + Sync>) -> HashMap<String
     let mut methods = HashMap::new();
     let streams = HashMap::new();
 
-    methods.insert("say_hello".to_string(),
-                    Box::new(SayHelloMethod{service: service.clone()}) as Box<dyn ::ttrpc::r#async::MethodHandler + Send + Sync>);
-
-    methods.insert("get_file".to_string(),
-                    Box::new(GetFileMethod{service: service.clone()}) as Box<dyn ::ttrpc::r#async::MethodHandler + Send + Sync>);
+    methods.insert("prepare_rootfs".to_string(),
+                    Box::new(PrepareRootfsMethod{service: service.clone()}) as Box<dyn ::ttrpc::r#async::MethodHandler + Send + Sync>);
 
     ret.insert("image.Greeter".to_string(), ::ttrpc::r#async::Service{ methods, streams });
     ret
