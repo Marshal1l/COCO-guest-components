@@ -11,7 +11,7 @@ use tonic::transport::{server::Connected, Server};
 pub mod image {
     tonic::include_proto!("image");
 }
-use anyhow::Result;
+use anyhow::{Context as AnyhowContext, Result};
 use image::greeter_server::{Greeter, GreeterServer};
 use image::{PrepareRootfsRequest, PrepareRootfsResponse};
 use image_rs::shared_rootfs::{
@@ -20,12 +20,16 @@ use image_rs::shared_rootfs::{
     wait_for_shared_rootfs_cache_entry, SharedRootfsCacheEntry,
 };
 use log::error;
+use prost::Message;
 use protos::{api::*, api_ttrpc::ImagePullServiceClient};
 use std::fs;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tonic::{Request, Response, Status};
 //constant
 pub const SERVER_PORT: u32 = 54321;
+pub const FAST_SERVER_PORT: u32 = 54322;
+const FAST_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 const NANO_PER_SECOND: i64 = 1000 * 1000 * 1000;
 const IMAGE_PULL_TIMEOUT_SECS: i64 = 180;
 const CDH_ADDR: &str = "unix:///run/confidential-containers/cdh.sock";
@@ -88,80 +92,88 @@ impl Greeter for MyGreeter {
         request: Request<PrepareRootfsRequest>,
     ) -> Result<Response<PrepareRootfsResponse>, Status> {
         let req = request.into_inner();
-        let image_ref = req.image_ref;
-        let total_start = Instant::now();
-        println!("Prepare shared rootfs request for: {}", image_ref);
-
-        if let Some(entry) = lookup_cached_shared_rootfs(&image_ref, total_start)? {
-            return Ok(Response::new(reply_from_cache_entry(entry)));
-        }
-
-        let safe_ref = sanitize_path_component(&image_ref);
-        let request_id = now_millis();
-        let bundle_path = shared_rootfs_bundles_dir().join(format!("{}-{}", safe_ref, request_id));
-        let images_dir = shared_rootfs_images_dir();
-
-        fs::create_dir_all(&bundle_path).map_err(|err| {
-            Status::internal(format!(
-                "failed to create shared rootfs bundle dir {}: {:#}",
-                bundle_path.display(),
-                err
-            ))
-        })?;
-        fs::create_dir_all(&images_dir).map_err(|err| {
-            Status::internal(format!(
-                "failed to create shared rootfs image dir {}: {:#}",
-                images_dir.display(),
-                err
-            ))
-        })?;
-
-        let pull_start = Instant::now();
-        let image_id = self
-            .image_pull_service
-            .pull_image(&image_ref, &bundle_path.display().to_string())
+        prepare_rootfs_response(&self.image_pull_service, req)
             .await
-            .map_err(|err| {
-                error!("pull_image failed for {}: {:#}", image_ref, err);
-                Status::internal(format!("pull_image failed for {}: {:#}", image_ref, err))
-            })?;
-        println!(
-            "Image share stage pull_image completed: image_ref={}, image_id={}, elapsed_ms={}",
-            image_ref,
-            image_id,
-            pull_start.elapsed().as_millis()
-        );
-
-        let cache_start = Instant::now();
-        let entry = prepare_shared_rootfs_cache_from_bundle(&image_ref, &image_id, &bundle_path)
-            .map_err(|err| {
-                error!(
-                    "failed to prepare shared rootfs cache for {}: {:#}",
-                    image_ref, err
-                );
-                Status::internal(format!(
-                    "failed to prepare shared rootfs cache for {}: {:#}",
-                    image_ref, err
-                ))
-            })?;
-        println!(
-            "Created RMM rootfs share: path={}, share_id={}, source_rd=0x{:x}, size={}, pages={}",
-            entry.rootfs_image_path.display(),
-            entry.share_id,
-            entry.source_rd_addr,
-            entry.image_size,
-            entry.page_count
-        );
-        println!(
-            "Image share stage cache/share completed: image_ref={}, share_id={}, elapsed_ms={}, total_ms={}",
-            image_ref,
-            entry.share_id,
-            cache_start.elapsed().as_millis(),
-            total_start.elapsed().as_millis()
-        );
-
-        Ok(Response::new(reply_from_cache_entry(entry)))
+            .map(Response::new)
     }
+}
+
+async fn prepare_rootfs_response(
+    image_pull_service: &ImagePullService,
+    req: PrepareRootfsRequest,
+) -> Result<PrepareRootfsResponse, Status> {
+    let image_ref = req.image_ref;
+    let total_start = Instant::now();
+    println!("Prepare shared rootfs request for: {}", image_ref);
+
+    if let Some(entry) = lookup_cached_shared_rootfs(&image_ref, total_start)? {
+        return Ok(reply_from_cache_entry(entry));
+    }
+
+    let safe_ref = sanitize_path_component(&image_ref);
+    let request_id = now_millis();
+    let bundle_path = shared_rootfs_bundles_dir().join(format!("{}-{}", safe_ref, request_id));
+    let images_dir = shared_rootfs_images_dir();
+
+    fs::create_dir_all(&bundle_path).map_err(|err| {
+        Status::internal(format!(
+            "failed to create shared rootfs bundle dir {}: {:#}",
+            bundle_path.display(),
+            err
+        ))
+    })?;
+    fs::create_dir_all(&images_dir).map_err(|err| {
+        Status::internal(format!(
+            "failed to create shared rootfs image dir {}: {:#}",
+            images_dir.display(),
+            err
+        ))
+    })?;
+
+    let pull_start = Instant::now();
+    let image_id = image_pull_service
+        .pull_image(&image_ref, &bundle_path.display().to_string())
+        .await
+        .map_err(|err| {
+            error!("pull_image failed for {}: {:#}", image_ref, err);
+            Status::internal(format!("pull_image failed for {}: {:#}", image_ref, err))
+        })?;
+    println!(
+        "Image share stage pull_image completed: image_ref={}, image_id={}, elapsed_ms={}",
+        image_ref,
+        image_id,
+        pull_start.elapsed().as_millis()
+    );
+
+    let cache_start = Instant::now();
+    let entry = prepare_shared_rootfs_cache_from_bundle(&image_ref, &image_id, &bundle_path)
+        .map_err(|err| {
+            error!(
+                "failed to prepare shared rootfs cache for {}: {:#}",
+                image_ref, err
+            );
+            Status::internal(format!(
+                "failed to prepare shared rootfs cache for {}: {:#}",
+                image_ref, err
+            ))
+        })?;
+    println!(
+        "Created RMM rootfs share: path={}, share_id={}, source_rd=0x{:x}, size={}, pages={}",
+        entry.rootfs_image_path.display(),
+        entry.share_id,
+        entry.source_rd_addr,
+        entry.image_size,
+        entry.page_count
+    );
+    println!(
+        "Image share stage cache/share completed: image_ref={}, share_id={}, elapsed_ms={}, total_ms={}",
+        image_ref,
+        entry.share_id,
+        cache_start.elapsed().as_millis(),
+        total_start.elapsed().as_millis()
+    );
+
+    Ok(reply_from_cache_entry(entry))
 }
 
 fn sanitize_path_component(input: &str) -> String {
@@ -329,9 +341,107 @@ async fn main() {
     let listener = VsockListener::bind(server_addr).unwrap();
     let incoming = VsockIncoming::new(listener);
     let greeter = MyGreeter::new();
+    let fast_service = ImagePullService::new(CDH_ADDR, IMAGE_PULL_TIMEOUT_SECS);
+
+    tokio::spawn(async move {
+        if let Err(err) = run_fast_vsock_server(fast_service).await {
+            println!("Fast image share vsock server disabled: {:#}", err);
+        }
+    });
+
     Server::builder()
         .add_service(GreeterServer::new(greeter))
         .serve_with_incoming(incoming)
         .await
         .expect("server crash");
+}
+
+async fn run_fast_vsock_server(image_pull_service: ImagePullService) -> std::io::Result<()> {
+    let server_addr = VsockAddr::new(VMADDR_CID_ANY, FAST_SERVER_PORT);
+    let listener = VsockListener::bind(server_addr)?;
+    println!(
+        "Fast image share vsock server listening on port {}",
+        FAST_SERVER_PORT
+    );
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        if let Err(err) = handle_fast_vsock_connection(stream, &image_pull_service).await {
+            println!("Fast image share request failed: {:#}", err);
+        }
+    }
+}
+
+async fn handle_fast_vsock_connection(
+    mut stream: VsockStream,
+    image_pull_service: &ImagePullService,
+) -> Result<(), anyhow::Error> {
+    let total_start = Instant::now();
+    let req_bytes = read_fast_frame(&mut stream)
+        .await
+        .context("read fast prepare_rootfs request")?;
+    let req = PrepareRootfsRequest::decode(req_bytes.as_slice())
+        .context("decode fast prepare_rootfs request")?;
+
+    let reply = prepare_rootfs_response(image_pull_service, req).await;
+    match reply {
+        Ok(reply) => {
+            let mut response = Vec::with_capacity(reply.encoded_len());
+            reply
+                .encode(&mut response)
+                .context("encode fast prepare_rootfs response")?;
+            write_fast_status_and_frame(&mut stream, 0, &response)
+                .await
+                .context("write fast prepare_rootfs response")?;
+            println!(
+                "Fast image share request completed: elapsed_ms={}",
+                total_start.elapsed().as_millis()
+            );
+        }
+        Err(status) => {
+            let message = status.to_string();
+            write_fast_status_and_frame(&mut stream, 1, message.as_bytes())
+                .await
+                .context("write fast prepare_rootfs error")?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn read_fast_frame(stream: &mut VsockStream) -> Result<Vec<u8>, anyhow::Error> {
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).await?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > FAST_MAX_MESSAGE_SIZE {
+        anyhow::bail!(
+            "fast image-share request too large: {} > {}",
+            len,
+            FAST_MAX_MESSAGE_SIZE
+        );
+    }
+
+    let mut payload = vec![0u8; len];
+    stream.read_exact(&mut payload).await?;
+    Ok(payload)
+}
+
+async fn write_fast_status_and_frame(
+    stream: &mut VsockStream,
+    status: u8,
+    payload: &[u8],
+) -> Result<(), anyhow::Error> {
+    if payload.len() > FAST_MAX_MESSAGE_SIZE {
+        anyhow::bail!(
+            "fast image-share response too large: {} > {}",
+            payload.len(),
+            FAST_MAX_MESSAGE_SIZE
+        );
+    }
+    stream.write_all(&[status]).await?;
+    stream
+        .write_all(&(payload.len() as u32).to_be_bytes())
+        .await?;
+    stream.write_all(payload).await?;
+    Ok(())
 }

@@ -437,7 +437,11 @@ async fn remove_file_if_exists(path: &Path) {
     match fs::remove_file(path).await {
         Ok(()) => {}
         Err(err) if err.kind() == ErrorKind::NotFound => {}
-        Err(err) => warn!("failed to remove temporary file {}: {:#}", path.display(), err),
+        Err(err) => warn!(
+            "failed to remove temporary file {}: {:#}",
+            path.display(),
+            err
+        ),
     }
 }
 

@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
 //vsock client
-use crate::vsock_ttrpc_client::VsockClient;
+use crate::vsock_ttrpc_client::{prepare_rootfs_fast, VsockClient};
 
 const RUNTIME_SHARED_ROOTFS_BLOCK_DEVICE: &str = "/dev/cocoimg0";
 
@@ -199,23 +199,49 @@ impl ImageClient {
         image_url: &str,
         bundle_dir: &Path,
     ) -> Result<String> {
-        let mut vsock_client = VsockClient::new().await?;
         let prepare_start = Instant::now();
-        let prepared = vsock_client
-            .prepare_rootfs(image_url)
-            .await
-            .context("failed to prepare shared rootfs in image CVM")?;
-        info!(
-            "Runtime shared rootfs stage prepare_rootfs_rpc completed: image_ref={}, share_id={}, elapsed_ms={}",
-            image_url,
-            prepared.share_id,
-            prepare_start.elapsed().as_millis()
-        );
+        let prepared = match prepare_rootfs_fast(image_url).await {
+            Ok(prepared) => {
+                println!(
+                    "Runtime shared rootfs stage prepare_rootfs_fast completed: image_ref={}, share_id={}, elapsed_ms={}",
+                    image_url,
+                    prepared.share_id,
+                    prepare_start.elapsed().as_millis()
+                );
+                prepared
+            }
+            Err(fast_err) => {
+                println!(
+                    "Runtime shared rootfs stage prepare_rootfs_fast failed: image_ref={}, error={:#}",
+                    image_url, fast_err
+                );
+                let fallback_start = Instant::now();
+                let mut vsock_client = VsockClient::new().await?;
+                let prepared = vsock_client
+                    .prepare_rootfs(image_url)
+                    .await
+                    .context("failed to prepare shared rootfs in image CVM")?;
+                println!(
+                    "Runtime shared rootfs stage prepare_rootfs_tonic completed: image_ref={}, share_id={}, elapsed_ms={}, total_prepare_ms={}",
+                    image_url,
+                    prepared.share_id,
+                    fallback_start.elapsed().as_millis(),
+                    prepare_start.elapsed().as_millis()
+                );
+                prepared
+            }
+        };
 
         fs::create_dir_all(bundle_dir)
             .with_context(|| format!("failed to create bundle dir {}", bundle_dir.display()))?;
 
+        let config_start = Instant::now();
         write_runtime_config_from_image_cvm(bundle_dir, &prepared.oci_config_json)?;
+        println!(
+            "Runtime shared rootfs stage write_config completed: image_ref={}, elapsed_ms={}",
+            image_url,
+            config_start.elapsed().as_millis()
+        );
 
         if prepared.share_id == 0 || prepared.source_rd_addr == 0 {
             bail!(
@@ -236,6 +262,14 @@ impl ImageClient {
             "Runtime shared rootfs stage mount_fast_path completed: share_id={}, source_rd=0x{:x}, size={}, pages={}, elapsed_ms={}",
             prepared.share_id, prepared.source_rd_addr, prepared.image_size, prepared.page_count
             , mount_start.elapsed().as_millis()
+        );
+        println!(
+            "Runtime shared rootfs stage mount_fast_path completed: share_id={}, source_rd=0x{:x}, size={}, pages={}, elapsed_ms={}",
+            prepared.share_id,
+            prepared.source_rd_addr,
+            prepared.image_size,
+            prepared.page_count,
+            mount_start.elapsed().as_millis()
         );
 
         Ok(prepared.image_id)
@@ -543,18 +577,46 @@ fn mount_prepared_shared_rootfs_fast_path(
         bail!("image CVM prepared an empty RMM shared rootfs image");
     }
 
+    let destroy_start = Instant::now();
     let _ = crate::coco_image_share::destroy_device();
+    println!(
+        "Runtime shared rootfs stage destroy_device completed: elapsed_ms={}",
+        destroy_start.elapsed().as_millis()
+    );
+
+    let create_start = Instant::now();
     crate::coco_image_share::create_device(shared_image)
         .context("failed to create /dev/cocoimg0 for RMM shared rootfs")?;
+    println!(
+        "Runtime shared rootfs stage create_device completed: share_id={}, source_rd=0x{:x}, size={}, pages={}, elapsed_ms={}",
+        shared_image.share_id,
+        shared_image.source_rd_addr,
+        shared_image.image_size,
+        shared_image.page_count,
+        create_start.elapsed().as_millis()
+    );
+
+    let preflight_start = Instant::now();
     preflight_shared_rootfs_block_device(Path::new(RUNTIME_SHARED_ROOTFS_BLOCK_DEVICE), fs_type)
         .context("failed to preflight /dev/cocoimg0 for RMM shared rootfs")?;
+    println!(
+        "Runtime shared rootfs stage preflight_device completed: fs_type={}, elapsed_ms={}",
+        fs_type,
+        preflight_start.elapsed().as_millis()
+    );
 
     let mut mount_options =
         MountSharedRootfsOptions::new(Path::new(RUNTIME_SHARED_ROOTFS_BLOCK_DEVICE), bundle_dir);
     mount_options.fs_type = Some(fs_type.to_string());
     mount_options.direct_block_device = true;
+    let mount_start = Instant::now();
     mount_shared_rootfs_image(&mount_options)
         .context("failed to mount RMM shared rootfs block device")?;
+    println!(
+        "Runtime shared rootfs stage mount_overlay completed: fs_type={}, elapsed_ms={}",
+        fs_type,
+        mount_start.elapsed().as_millis()
+    );
 
     Ok(())
 }

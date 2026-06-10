@@ -293,8 +293,11 @@ pub fn prepare_shared_rootfs_cache_from_bundle(
         return Ok(entry);
     }
     if let Some(entry) = read_shared_rootfs_cache_entry(image_id)? {
-        write_shared_rootfs_cache_entry(&entry)?;
-        return Ok(entry);
+        let mut aliased_entry = entry;
+        aliased_entry.image_ref = image_ref.to_string();
+        aliased_entry.image_id = image_id.to_string();
+        write_shared_rootfs_cache_entry(&aliased_entry)?;
+        return Ok(aliased_entry);
     }
 
     mark_shared_rootfs_cache_pending(image_ref)?;
@@ -384,12 +387,21 @@ pub fn prepare_shared_rootfs_image(
     for rootfs_format in rootfs_image_format_candidates() {
         let rootfs_image_path =
             images_dir.join(format!("{}.{}", safe_image_id, rootfs_format.as_fs_type()));
+        let format_start = Instant::now();
 
         if rootfs_image_path.exists() {
             let size = fs::metadata(&rootfs_image_path)
                 .with_context(|| format!("failed to stat {}", rootfs_image_path.display()))?
                 .len();
             let sha256 = sha256_file(&rootfs_image_path)?;
+            println!(
+                "Shared rootfs image cache hit: image_ref={}, fs_type={}, path={}, size={}, elapsed_ms={}",
+                image_ref,
+                rootfs_format.as_fs_type(),
+                rootfs_image_path.display(),
+                size,
+                format_start.elapsed().as_millis()
+            );
             return Ok(RootfsImageInfo {
                 path: rootfs_image_path,
                 format: rootfs_format,
@@ -411,8 +423,27 @@ pub fn prepare_shared_rootfs_image(
         };
 
         match build_rootfs_image(&options) {
-            Ok(info) => return Ok(info),
-            Err(err) => failures.push(format!("{}: {:#}", rootfs_format.as_fs_type(), err)),
+            Ok(info) => {
+                println!(
+                    "Shared rootfs image build selected: image_ref={}, fs_type={}, path={}, size={}, elapsed_ms={}",
+                    image_ref,
+                    info.format.as_fs_type(),
+                    info.path.display(),
+                    info.size,
+                    format_start.elapsed().as_millis()
+                );
+                return Ok(info);
+            }
+            Err(err) => {
+                println!(
+                    "Shared rootfs image build candidate failed: image_ref={}, fs_type={}, elapsed_ms={}, error={:#}",
+                    image_ref,
+                    rootfs_format.as_fs_type(),
+                    format_start.elapsed().as_millis(),
+                    err
+                );
+                failures.push(format!("{}: {:#}", rootfs_format.as_fs_type(), err));
+            }
         }
     }
 
@@ -724,7 +755,18 @@ fn is_mountpoint(path: &Path) -> bool {
 }
 
 fn command_available(program: &str) -> bool {
-    Command::new(program).arg("--help").output().is_ok()
+    if program.contains('/') {
+        return Path::new(program).is_file();
+    }
+
+    env::var_os("PATH")
+        .map(|paths| {
+            env::split_paths(&paths).any(|dir| {
+                let candidate = dir.join(program);
+                candidate.is_file()
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn run_command(program: &str, args: &[&str]) -> Result<()> {
