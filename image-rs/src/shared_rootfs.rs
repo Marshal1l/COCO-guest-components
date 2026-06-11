@@ -12,7 +12,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use walkdir::WalkDir;
 
 const ONE_MIB: u64 = 1024 * 1024;
@@ -23,10 +23,15 @@ const DEFAULT_SHARED_ROOTFS_DIR: &str = "/tmp/run/image-rs/shared-rootfs";
 const SHARED_ROOTFS_CACHE_DIR: &str = "cache";
 const SHARED_ROOTFS_IMAGES_DIR: &str = "images";
 const SHARED_ROOTFS_BUNDLES_DIR: &str = "bundles";
+const SHARED_ROOTFS_BUNDLE_INDEX_DIR: &str = "bundle-index";
 const CACHE_FILE_SUFFIX: &str = "json";
+const BUNDLE_FILE_SUFFIX: &str = "bundle.json";
 const PENDING_FILE_SUFFIX: &str = "pending";
+const DIGEST_FILE_SUFFIX: &str = "sha256.json";
 const BUNDLE_ROOTFS_DIR: &str = "rootfs";
 const BUNDLE_CONFIG_JSON: &str = "config.json";
+const EROFS_PRESERVE_XATTRS_ENV: &str = "COCO_SHARED_ROOTFS_EROFS_PRESERVE_XATTRS";
+const HASH_ROOTFS_IMAGE_ENV: &str = "COCO_SHARED_ROOTFS_HASH_IMAGE";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RootfsImageFormat {
@@ -52,6 +57,7 @@ pub struct BuildRootfsImageOptions {
     pub format: RootfsImageFormat,
     pub image_size_mb: u64,
     pub squashfs_compressor: String,
+    pub hash_image: bool,
 }
 
 impl BuildRootfsImageOptions {
@@ -62,6 +68,7 @@ impl BuildRootfsImageOptions {
             format: RootfsImageFormat::Erofs,
             image_size_mb: 0,
             squashfs_compressor: "gzip".to_string(),
+            hash_image: true,
         }
     }
 
@@ -72,6 +79,7 @@ impl BuildRootfsImageOptions {
             format: RootfsImageFormat::Squashfs,
             image_size_mb: 64,
             squashfs_compressor: "gzip".to_string(),
+            hash_image: true,
         }
     }
 
@@ -82,6 +90,7 @@ impl BuildRootfsImageOptions {
             format: RootfsImageFormat::Ext4,
             image_size_mb: EXT4_MIN_IMAGE_SIZE_MB,
             squashfs_compressor: "gzip".to_string(),
+            hash_image: true,
         }
     }
 }
@@ -106,6 +115,23 @@ pub struct RootfsImageInfo {
     pub format: RootfsImageFormat,
     pub size: u64,
     pub sha256: String,
+    pub timings: RootfsImageTimings,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RootfsImageTimings {
+    pub build_ms: u128,
+    pub stat_ms: u128,
+    pub sha256_ms: u128,
+    pub total_ms: u128,
+    pub digest_cache_hit: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct RootfsDigestSidecar {
+    size: u64,
+    modified_unix_nanos: u128,
+    sha256: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -121,6 +147,13 @@ pub struct SharedRootfsCacheEntry {
     pub share_id: u64,
     pub page_count: u64,
     pub rootfs_image_path: PathBuf,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SharedRootfsBundleEntry {
+    pub image_ref: String,
+    pub image_id: String,
+    pub bundle_path: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -152,6 +185,7 @@ pub struct MountedSharedRootfs {
 }
 
 pub fn build_rootfs_image(options: &BuildRootfsImageOptions) -> Result<RootfsImageInfo> {
+    let total_start = Instant::now();
     if !options.rootfs_dir.is_dir() {
         bail!(
             "rootfs source directory does not exist: {}",
@@ -171,23 +205,38 @@ pub fn build_rootfs_image(options: &BuildRootfsImageOptions) -> Result<RootfsIma
             )
         })?;
     }
+    let _ = fs::remove_file(rootfs_digest_sidecar_path(&options.output_image));
 
+    let build_start = Instant::now();
     match options.format {
         RootfsImageFormat::Erofs => build_erofs_image(options)?,
         RootfsImageFormat::Squashfs => build_squashfs_image(options)?,
         RootfsImageFormat::Ext4 => build_ext4_image(options)?,
     }
+    let build_ms = build_start.elapsed().as_millis();
 
-    let size = fs::metadata(&options.output_image)
-        .with_context(|| format!("failed to stat {}", options.output_image.display()))?
-        .len();
-    let sha256 = sha256_file(&options.output_image)?;
+    let stat_start = Instant::now();
+    let (size, modified_unix_nanos) = fs_size_and_modified_unix_nanos(&options.output_image)?;
+    let stat_ms = stat_start.elapsed().as_millis();
+
+    let (sha256, sha256_ms, digest_cache_hit) = if options.hash_image {
+        rootfs_digest_for_image(&options.output_image, size, modified_unix_nanos)?
+    } else {
+        (String::new(), 0, false)
+    };
 
     Ok(RootfsImageInfo {
         path: options.output_image.clone(),
         format: options.format,
         size,
         sha256,
+        timings: RootfsImageTimings {
+            build_ms,
+            stat_ms,
+            sha256_ms,
+            total_ms: total_start.elapsed().as_millis(),
+            digest_cache_hit,
+        },
     })
 }
 
@@ -242,6 +291,31 @@ pub fn write_shared_rootfs_cache_entry(entry: &SharedRootfsCacheEntry) -> Result
     write_cache_entry_for_key(&entry.image_ref, entry)?;
     if entry.image_id != entry.image_ref {
         write_cache_entry_for_key(&entry.image_id, entry)?;
+    }
+    Ok(())
+}
+
+pub fn read_shared_rootfs_bundle_entry(key: &str) -> Result<Option<SharedRootfsBundleEntry>> {
+    let path = bundle_index_path(key);
+    let data = match fs::read(&path) {
+        Ok(data) => data,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("failed to read {}", path.display())),
+    };
+
+    let entry: SharedRootfsBundleEntry = serde_json::from_slice(&data)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    validate_shared_rootfs_bundle_entry(&entry)
+        .with_context(|| format!("invalid shared rootfs bundle entry {}", path.display()))?;
+
+    Ok(Some(entry))
+}
+
+pub fn write_shared_rootfs_bundle_entry(entry: &SharedRootfsBundleEntry) -> Result<()> {
+    validate_shared_rootfs_bundle_entry(entry)?;
+    write_bundle_entry_for_key(&entry.image_ref, entry)?;
+    if entry.image_id != entry.image_ref {
+        write_bundle_entry_for_key(&entry.image_id, entry)?;
     }
     Ok(())
 }
@@ -325,12 +399,17 @@ fn prepare_shared_rootfs_cache_from_bundle_inner(
     let rootfs_info =
         prepare_shared_rootfs_image(&rootfs_dir, &images_dir, &safe_image_id, image_ref)?;
     info!(
-        "Shared rootfs stage build_image completed: image_ref={}, path={}, fs_type={}, size={}, elapsed_ms={}",
+        "Shared rootfs stage build_image completed: image_ref={}, path={}, fs_type={}, size={}, elapsed_ms={}, mkfs_ms={}, stat_ms={}, sha256_ms={}, sha256_computed={}, digest_cache_hit={}",
         image_ref,
         rootfs_info.path.display(),
         rootfs_info.format.as_fs_type(),
         rootfs_info.size,
-        build_start.elapsed().as_millis()
+        build_start.elapsed().as_millis(),
+        rootfs_info.timings.build_ms,
+        rootfs_info.timings.stat_ms,
+        rootfs_info.timings.sha256_ms,
+        !rootfs_info.sha256.is_empty(),
+        rootfs_info.timings.digest_cache_hit
     );
 
     let share_start = Instant::now();
@@ -357,7 +436,7 @@ fn prepare_shared_rootfs_cache_from_bundle_inner(
         fs_type: rootfs_info.format.as_fs_type().to_string(),
         image_size: rootfs_info.size,
         block_size: 4096,
-        rootfs_digest: rootfs_info.sha256,
+        rootfs_digest: shared_rootfs_digest(&rootfs_info, image_id),
         oci_config_json: config_json,
         source_rd_addr: share.source_rd_addr,
         share_id: share.share_id,
@@ -390,27 +469,42 @@ pub fn prepare_shared_rootfs_image(
         let format_start = Instant::now();
 
         if rootfs_image_path.exists() {
-            let size = fs::metadata(&rootfs_image_path)
-                .with_context(|| format!("failed to stat {}", rootfs_image_path.display()))?
-                .len();
-            let sha256 = sha256_file(&rootfs_image_path)?;
+            let stat_start = Instant::now();
+            let (size, modified_unix_nanos) = fs_size_and_modified_unix_nanos(&rootfs_image_path)?;
+            let stat_ms = stat_start.elapsed().as_millis();
+            let (sha256, sha256_ms, digest_cache_hit) = if shared_rootfs_hash_image_enabled() {
+                rootfs_digest_for_image(&rootfs_image_path, size, modified_unix_nanos)?
+            } else {
+                (String::new(), 0, false)
+            };
             println!(
-                "Shared rootfs image cache hit: image_ref={}, fs_type={}, path={}, size={}, elapsed_ms={}",
+                "Shared rootfs image cache hit: image_ref={}, fs_type={}, path={}, size={}, elapsed_ms={}, stat_ms={}, sha256_ms={}, sha256_computed={}, digest_cache_hit={}",
                 image_ref,
                 rootfs_format.as_fs_type(),
                 rootfs_image_path.display(),
                 size,
-                format_start.elapsed().as_millis()
+                format_start.elapsed().as_millis(),
+                stat_ms,
+                sha256_ms,
+                !sha256.is_empty(),
+                digest_cache_hit
             );
             return Ok(RootfsImageInfo {
                 path: rootfs_image_path,
                 format: rootfs_format,
                 size,
                 sha256,
+                timings: RootfsImageTimings {
+                    build_ms: 0,
+                    stat_ms,
+                    sha256_ms,
+                    total_ms: format_start.elapsed().as_millis(),
+                    digest_cache_hit,
+                },
             });
         }
 
-        let options = match rootfs_format {
+        let mut options = match rootfs_format {
             RootfsImageFormat::Erofs => {
                 BuildRootfsImageOptions::erofs(rootfs_dir, &rootfs_image_path)
             }
@@ -421,16 +515,22 @@ pub fn prepare_shared_rootfs_image(
                 BuildRootfsImageOptions::ext4(rootfs_dir, &rootfs_image_path)
             }
         };
+        options.hash_image = shared_rootfs_hash_image_enabled();
 
         match build_rootfs_image(&options) {
             Ok(info) => {
                 println!(
-                    "Shared rootfs image build selected: image_ref={}, fs_type={}, path={}, size={}, elapsed_ms={}",
+                    "Shared rootfs image build selected: image_ref={}, fs_type={}, path={}, size={}, elapsed_ms={}, mkfs_ms={}, stat_ms={}, sha256_ms={}, sha256_computed={}, digest_cache_hit={}",
                     image_ref,
                     info.format.as_fs_type(),
                     info.path.display(),
                     info.size,
-                    format_start.elapsed().as_millis()
+                    format_start.elapsed().as_millis(),
+                    info.timings.build_ms,
+                    info.timings.stat_ms,
+                    info.timings.sha256_ms,
+                    !info.sha256.is_empty(),
+                    info.timings.digest_cache_hit
                 );
                 return Ok(info);
             }
@@ -495,6 +595,30 @@ fn validate_shared_rootfs_cache_entry(entry: &SharedRootfsCacheEntry) -> Result<
     Ok(())
 }
 
+fn validate_shared_rootfs_bundle_entry(entry: &SharedRootfsBundleEntry) -> Result<()> {
+    if entry.image_ref.is_empty() {
+        bail!("shared rootfs bundle entry has empty image_ref");
+    }
+    if entry.image_id.is_empty() {
+        bail!("shared rootfs bundle entry has empty image_id");
+    }
+    if !entry.bundle_path.is_dir() {
+        bail!(
+            "shared rootfs bundle does not exist: {}",
+            entry.bundle_path.display()
+        );
+    }
+    let rootfs_dir = entry.bundle_path.join(BUNDLE_ROOTFS_DIR);
+    if !rootfs_dir.is_dir() {
+        bail!(
+            "shared rootfs bundle has no rootfs: {}",
+            rootfs_dir.display()
+        );
+    }
+
+    Ok(())
+}
+
 fn write_cache_entry_for_key(key: &str, entry: &SharedRootfsCacheEntry) -> Result<()> {
     let path = cache_path(key, CACHE_FILE_SUFFIX);
     if let Some(parent) = path.parent() {
@@ -517,10 +641,42 @@ fn write_cache_entry_for_key(key: &str, entry: &SharedRootfsCacheEntry) -> Resul
     Ok(())
 }
 
+fn write_bundle_entry_for_key(key: &str, entry: &SharedRootfsBundleEntry) -> Result<()> {
+    let path = bundle_index_path(key);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let tmp_path = path.with_extension(format!("{BUNDLE_FILE_SUFFIX}.tmp"));
+    let data = serde_json::to_vec(entry)?;
+    fs::write(&tmp_path, data)
+        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+    fs::rename(&tmp_path, &path).with_context(|| {
+        format!(
+            "failed to rename {} to {}",
+            tmp_path.display(),
+            path.display()
+        )
+    })?;
+
+    Ok(())
+}
+
 fn cache_path(key: &str, suffix: &str) -> PathBuf {
     shared_rootfs_dir()
         .join(SHARED_ROOTFS_CACHE_DIR)
         .join(format!("{}.{}", sanitize_path_component(key), suffix))
+}
+
+fn bundle_index_path(key: &str) -> PathBuf {
+    shared_rootfs_dir()
+        .join(SHARED_ROOTFS_BUNDLE_INDEX_DIR)
+        .join(format!(
+            "{}.{}",
+            sanitize_path_component(key),
+            BUNDLE_FILE_SUFFIX
+        ))
 }
 
 pub fn mount_shared_rootfs_image(
@@ -663,14 +819,145 @@ pub fn sha256_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn rootfs_digest_for_image(
+    path: &Path,
+    size: u64,
+    modified_unix_nanos: u128,
+) -> Result<(String, u128, bool)> {
+    let start = Instant::now();
+    if let Some(sha256) = read_rootfs_digest_sidecar(path, size, modified_unix_nanos)? {
+        return Ok((sha256, start.elapsed().as_millis(), true));
+    }
+
+    let sha256 = sha256_file(path)?;
+    write_rootfs_digest_sidecar(path, size, modified_unix_nanos, &sha256)?;
+    Ok((sha256, start.elapsed().as_millis(), false))
+}
+
+fn read_rootfs_digest_sidecar(
+    path: &Path,
+    size: u64,
+    modified_unix_nanos: u128,
+) -> Result<Option<String>> {
+    let sidecar_path = rootfs_digest_sidecar_path(path);
+    let data = match fs::read(&sidecar_path) {
+        Ok(data) => data,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", sidecar_path.display()))
+        }
+    };
+
+    let sidecar: RootfsDigestSidecar = match serde_json::from_slice(&data) {
+        Ok(sidecar) => sidecar,
+        Err(err) => {
+            println!(
+                "Shared rootfs digest sidecar ignored: path={}, error={}",
+                sidecar_path.display(),
+                err
+            );
+            return Ok(None);
+        }
+    };
+
+    if sidecar.size != size
+        || sidecar.modified_unix_nanos != modified_unix_nanos
+        || sidecar.sha256.len() != 64
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(sidecar.sha256))
+}
+
+fn write_rootfs_digest_sidecar(
+    path: &Path,
+    size: u64,
+    modified_unix_nanos: u128,
+    sha256: &str,
+) -> Result<()> {
+    let sidecar_path = rootfs_digest_sidecar_path(path);
+    let tmp_path = sidecar_path.with_file_name(format!(
+        "{}.tmp",
+        sidecar_path
+            .file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_else(|| "rootfs.sha256.json".into())
+    ));
+    let sidecar = RootfsDigestSidecar {
+        size,
+        modified_unix_nanos,
+        sha256: sha256.to_string(),
+    };
+    let data = serde_json::to_vec(&sidecar)?;
+    fs::write(&tmp_path, data)
+        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+    fs::rename(&tmp_path, &sidecar_path).with_context(|| {
+        format!(
+            "failed to rename {} to {}",
+            tmp_path.display(),
+            sidecar_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn rootfs_digest_sidecar_path(path: &Path) -> PathBuf {
+    let mut sidecar_path = path.to_path_buf();
+    let sidecar_file_name = path
+        .file_name()
+        .map(|name| format!("{}.{}", name.to_string_lossy(), DIGEST_FILE_SUFFIX))
+        .unwrap_or_else(|| format!("rootfs.{}", DIGEST_FILE_SUFFIX));
+    sidecar_path.set_file_name(sidecar_file_name);
+    sidecar_path
+}
+
+fn shared_rootfs_digest(rootfs_info: &RootfsImageInfo, image_id: &str) -> String {
+    if rootfs_info.sha256.is_empty() {
+        format!("image-id:{image_id}")
+    } else {
+        format!("sha256:{}", rootfs_info.sha256)
+    }
+}
+
+fn shared_rootfs_hash_image_enabled() -> bool {
+    env_truthy(HASH_ROOTFS_IMAGE_ENV)
+}
+
+fn fs_size_and_modified_unix_nanos(path: &Path) -> Result<(u64, u128)> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    let modified = metadata
+        .modified()
+        .with_context(|| format!("failed to read mtime for {}", path.display()))?;
+    Ok((metadata.len(), system_time_unix_nanos(modified)))
+}
+
+fn system_time_unix_nanos(time: SystemTime) -> u128 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+}
+
 fn build_erofs_image(options: &BuildRootfsImageOptions) -> Result<()> {
-    run_command(
-        "mkfs.erofs",
-        &[
-            path_arg(&options.output_image).as_str(),
-            path_arg(&options.rootfs_dir).as_str(),
-        ],
-    )
+    let preserve_xattrs = env_truthy(EROFS_PRESERVE_XATTRS_ENV);
+    let output_image = path_arg(&options.output_image);
+    let rootfs_dir = path_arg(&options.rootfs_dir);
+    let mut args = Vec::new();
+
+    if !preserve_xattrs {
+        args.push("-x-1".to_string());
+    }
+    args.push(output_image);
+    args.push(rootfs_dir);
+
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_command("mkfs.erofs", &arg_refs).with_context(|| {
+        format!(
+            "failed to build EROFS image with preserve_xattrs={}",
+            preserve_xattrs
+        )
+    })
 }
 
 fn build_squashfs_image(options: &BuildRootfsImageOptions) -> Result<()> {
@@ -769,6 +1056,17 @@ fn command_available(program: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn env_truthy(key: &str) -> bool {
+    env::var(key)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn run_command(program: &str, args: &[&str]) -> Result<()> {
     let output = Command::new(program)
         .args(args)
@@ -831,6 +1129,48 @@ mod tests {
     }
 
     #[test]
+    fn rootfs_digest_sidecar_requires_matching_size_and_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("rootfs.erofs");
+        fs::write(&file_path, b"abc").unwrap();
+        let (size, mtime) = fs_size_and_modified_unix_nanos(&file_path).unwrap();
+
+        let (digest, _, cache_hit) = rootfs_digest_for_image(&file_path, size, mtime).unwrap();
+        assert!(!cache_hit);
+        let (cached_digest, _, cache_hit) =
+            rootfs_digest_for_image(&file_path, size, mtime).unwrap();
+        assert!(cache_hit);
+        assert_eq!(cached_digest, digest);
+
+        let (new_digest, _, cache_hit) =
+            rootfs_digest_for_image(&file_path, size, mtime + 1).unwrap();
+        assert!(!cache_hit);
+        assert_eq!(new_digest, digest);
+    }
+
+    #[test]
+    fn shared_rootfs_digest_uses_image_id_when_image_hash_is_skipped() {
+        let mut info = RootfsImageInfo {
+            path: PathBuf::from("/tmp/rootfs.erofs"),
+            format: RootfsImageFormat::Erofs,
+            size: 4096,
+            sha256: String::new(),
+            timings: RootfsImageTimings::default(),
+        };
+
+        assert_eq!(
+            shared_rootfs_digest(&info, "sha256:abc123"),
+            "image-id:sha256:abc123"
+        );
+
+        info.sha256 = "a".repeat(64);
+        assert_eq!(
+            shared_rootfs_digest(&info, "sha256:abc123"),
+            format!("sha256:{}", "a".repeat(64))
+        );
+    }
+
+    #[test]
     fn rootfs_image_format_reports_fs_type() {
         assert_eq!(RootfsImageFormat::Erofs.as_fs_type(), "erofs");
         assert_eq!(RootfsImageFormat::Squashfs.as_fs_type(), "squashfs");
@@ -840,6 +1180,37 @@ mod tests {
     #[test]
     fn rootfs_image_format_candidates_keep_ext4_fallback() {
         assert!(rootfs_image_format_candidates().contains(&RootfsImageFormat::Ext4));
+    }
+
+    #[test]
+    fn bundle_entry_round_trips_by_ref_and_image_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = dir.path().join("bundle");
+        let rootfs_path = bundle_path.join(BUNDLE_ROOTFS_DIR);
+        fs::create_dir_all(&rootfs_path).unwrap();
+
+        env::set_var(SHARED_ROOTFS_DIR_ENV, dir.path().join("shared-rootfs"));
+        let entry = SharedRootfsBundleEntry {
+            image_ref: "registry.example.com/library/busybox:latest".to_string(),
+            image_id: "sha256:abc123".to_string(),
+            bundle_path,
+        };
+
+        write_shared_rootfs_bundle_entry(&entry).unwrap();
+
+        assert_eq!(
+            read_shared_rootfs_bundle_entry(&entry.image_ref)
+                .unwrap()
+                .unwrap(),
+            entry
+        );
+        assert_eq!(
+            read_shared_rootfs_bundle_entry(&entry.image_id)
+                .unwrap()
+                .unwrap(),
+            entry
+        );
+        env::remove_var(SHARED_ROOTFS_DIR_ENV);
     }
 
     #[test]
@@ -873,6 +1244,7 @@ mod tests {
             format: RootfsImageFormat::Ext4,
             image_size_mb: 16,
             squashfs_compressor: "gzip".to_string(),
+            hash_image: true,
         };
 
         assert_eq!(ext4_image_size_mb(&options).unwrap(), 16);

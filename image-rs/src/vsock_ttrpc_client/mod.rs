@@ -4,9 +4,10 @@ use image::greeter_client::GreeterClient;
 use log::{error, info};
 use prost::Message;
 use std::sync::LazyLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 use tokio_vsock::{VsockAddr, VsockStream};
 use tonic::{
     transport::{Channel, Endpoint, Uri},
@@ -20,8 +21,18 @@ pub const SERVER_PORT: u32 = 54321;
 pub const FAST_SERVER_PORT: u32 = 54322;
 pub const SERVER_CID: u32 = 4;
 const FAST_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
+const FAST_PREFETCH_TIMEOUT_SECS: u64 = 3;
 static FAST_PRECONNECTED_STREAM: LazyLock<Mutex<Option<VsockStream>>> =
     LazyLock::new(|| Mutex::new(None));
+static FAST_PREPARED_ROOTFS: LazyLock<Mutex<Option<PrefetchedRootfs>>> =
+    LazyLock::new(|| Mutex::new(None));
+static FAST_PREPARE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+#[derive(Clone)]
+struct PrefetchedRootfs {
+    image_ref: String,
+    response: image::PrepareRootfsResponse,
+}
 
 pub struct VsockClient {
     client: GreeterClient<Channel>,
@@ -98,6 +109,82 @@ pub async fn preconnect_fast_image_share() {
 }
 
 pub async fn prepare_rootfs_fast(image_ref: &str) -> Result<image::PrepareRootfsResponse> {
+    if let Some(response) = take_prefetched_rootfs(image_ref).await {
+        println!(
+            "Runtime fast image share stage use_prefetched_rootfs completed: image_ref={}, share_id={}",
+            image_ref, response.share_id
+        );
+        return Ok(response);
+    }
+
+    let _prepare_guard = FAST_PREPARE_LOCK.lock().await;
+    if let Some(response) = take_prefetched_rootfs(image_ref).await {
+        println!(
+            "Runtime fast image share stage use_prefetched_rootfs_after_wait completed: image_ref={}, share_id={}",
+            image_ref, response.share_id
+        );
+        return Ok(response);
+    }
+
+    prepare_rootfs_fast_uncached(image_ref).await
+}
+
+pub async fn prefetch_prepare_rootfs_fast(image_ref: String) {
+    if image_ref.is_empty() {
+        return;
+    }
+
+    let start = Instant::now();
+    let _prepare_guard = FAST_PREPARE_LOCK.lock().await;
+    if cached_prefetched_rootfs_matches(&image_ref).await {
+        println!(
+            "Runtime fast image share prefetch skipped: image_ref={}, elapsed_ms={}, reason=already_cached",
+            image_ref,
+            start.elapsed().as_millis()
+        );
+        return;
+    }
+
+    match timeout(
+        Duration::from_secs(FAST_PREFETCH_TIMEOUT_SECS),
+        prepare_rootfs_fast_uncached(&image_ref),
+    )
+    .await
+    {
+        Ok(Ok(response)) => {
+            let share_id = response.share_id;
+            let mut cached = FAST_PREPARED_ROOTFS.lock().await;
+            *cached = Some(PrefetchedRootfs {
+                image_ref: image_ref.clone(),
+                response,
+            });
+            println!(
+                "Runtime fast image share prefetch completed: image_ref={}, share_id={}, elapsed_ms={}",
+                image_ref,
+                share_id,
+                start.elapsed().as_millis()
+            );
+        }
+        Ok(Err(err)) => {
+            println!(
+                "Runtime fast image share prefetch failed: image_ref={}, elapsed_ms={}, error={:#}",
+                image_ref,
+                start.elapsed().as_millis(),
+                err
+            );
+        }
+        Err(_) => {
+            println!(
+                "Runtime fast image share prefetch timed out: image_ref={}, timeout_secs={}, elapsed_ms={}",
+                image_ref,
+                FAST_PREFETCH_TIMEOUT_SECS,
+                start.elapsed().as_millis()
+            );
+        }
+    }
+}
+
+async fn prepare_rootfs_fast_uncached(image_ref: &str) -> Result<image::PrepareRootfsResponse> {
     let total_start = Instant::now();
     let addr = VsockAddr::new(SERVER_CID, FAST_SERVER_PORT);
     let mut stream = match take_preconnected_stream().await {
@@ -177,6 +264,25 @@ pub async fn prepare_rootfs_fast(image_ref: &str) -> Result<image::PrepareRootfs
         total_start.elapsed().as_millis()
     );
     Ok(response)
+}
+
+async fn take_prefetched_rootfs(image_ref: &str) -> Option<image::PrepareRootfsResponse> {
+    let mut cached = FAST_PREPARED_ROOTFS.lock().await;
+    if cached
+        .as_ref()
+        .is_some_and(|entry| entry.image_ref == image_ref)
+    {
+        return cached.take().map(|entry| entry.response);
+    }
+    None
+}
+
+async fn cached_prefetched_rootfs_matches(image_ref: &str) -> bool {
+    FAST_PREPARED_ROOTFS
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(|entry| entry.image_ref == image_ref)
 }
 
 async fn take_preconnected_stream() -> Option<VsockStream> {

@@ -336,7 +336,14 @@ impl ImageClient {
             self.config.image_pull_proxy.as_deref(),
             self.config.extra_root_certificates.clone(),
         )?;
+        let manifest_start = Instant::now();
         let (image_manifest, image_digest, image_config) = client.pull_manifest().await?;
+        info!(
+            "Image share stage pull_manifest completed: image_ref={}, layers={}, elapsed_ms={}",
+            image_url,
+            image_manifest.layers.len(),
+            manifest_start.elapsed().as_millis()
+        );
         info!("Image manifest: {:?}\n", image_manifest);
         let id = image_manifest.config.digest.clone();
 
@@ -390,7 +397,15 @@ impl ImageClient {
         {
             let m: tokio::sync::RwLockReadGuard<'_, MetaStore> = self.meta_store.read().await;
             if let Some(image_data) = &m.image_db.get(&id) {
-                return create_bundle(image_data, bundle_dir, snapshot);
+                let bundle_start = Instant::now();
+                let image_id = create_bundle(image_data, bundle_dir, snapshot)?;
+                info!(
+                    "Image share stage create_bundle_from_image_cache completed: image_ref={}, image_id={}, elapsed_ms={}",
+                    image_url,
+                    image_id,
+                    bundle_start.elapsed().as_millis()
+                );
+                return Ok(image_id);
             }
         }
 
@@ -411,6 +426,7 @@ impl ImageClient {
         )?;
         info!("create_image_meta!\n");
         let unique_layers_len = unique_layers.len();
+        let layers_start = Instant::now();
         let layer_metas = client
             .async_pull_layers(
                 unique_layers,
@@ -419,6 +435,12 @@ impl ImageClient {
                 self.meta_store.clone(),
             )
             .await?;
+        info!(
+            "Image share stage pull_layers completed: image_ref={}, layers={}, elapsed_ms={}",
+            image_url,
+            layer_metas.len(),
+            layers_start.elapsed().as_millis()
+        );
         info!("async_pull_layers!\n");
         image_data.layer_metas = layer_metas;
         let layer_db: HashMap<String, LayerMeta> = image_data
@@ -435,7 +457,14 @@ impl ImageClient {
             );
         }
 
+        let bundle_start = Instant::now();
         let image_id = create_bundle(&image_data, bundle_dir, snapshot)?;
+        info!(
+            "Image share stage create_bundle completed: image_ref={}, image_id={}, elapsed_ms={}",
+            image_url,
+            image_id,
+            bundle_start.elapsed().as_millis()
+        );
         info!("create_bundle!\n");
         self.meta_store
             .write()
@@ -443,6 +472,7 @@ impl ImageClient {
             .image_db
             .insert(image_data.id.clone(), image_data.clone());
 
+        let meta_write_start = Instant::now();
         let meta_file = self
             .config
             .work_dir
@@ -454,6 +484,11 @@ impl ImageClient {
             .await
             .write_to_file(&meta_file)
             .context("update meta store failed")?;
+        info!(
+            "Image share stage write_meta_store completed: image_ref={}, elapsed_ms={}",
+            image_url,
+            meta_write_start.elapsed().as_millis()
+        );
         Ok(image_id)
     }
 
@@ -480,6 +515,7 @@ impl ImageClient {
             format: RootfsImageFormat::Squashfs,
             image_size_mb: 64,
             squashfs_compressor: "gzip".to_string(),
+            hash_image: true,
         };
         build_rootfs_image(&options).context("failed to build shared rootfs image")
     }
@@ -703,21 +739,40 @@ fn create_bundle(
     bundle_dir: &Path,
     snapshot: &mut Box<dyn Snapshotter>,
 ) -> Result<String> {
+    let total_start = Instant::now();
     let layer_path = image_data
         .layer_metas
         .iter()
         .rev()
         .map(|l| l.store_path.as_str())
         .collect::<Vec<&str>>();
+    let mount_start = Instant::now();
     snapshot.mount(&layer_path, &bundle_dir.join(BUNDLE_ROOTFS))?;
+    info!(
+        "Image share stage bundle_snapshot_mount completed: image_id={}, layers={}, elapsed_ms={}",
+        image_data.id,
+        layer_path.len(),
+        mount_start.elapsed().as_millis()
+    );
 
     let image_config = image_data.image_config.clone();
     if image_config.os() != &Os::Linux {
         bail!("unsupport OS image {:?}", image_config.os());
     }
 
+    let config_start = Instant::now();
     create_runtime_config(&image_config, bundle_dir)?;
+    info!(
+        "Image share stage bundle_config_write completed: image_id={}, elapsed_ms={}",
+        image_data.id,
+        config_start.elapsed().as_millis()
+    );
     let image_id = image_data.id.clone();
+    info!(
+        "Image share stage create_bundle_inner completed: image_id={}, total_ms={}",
+        image_id,
+        total_start.elapsed().as_millis()
+    );
     Ok(image_id)
 }
 

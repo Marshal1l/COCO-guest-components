@@ -17,18 +17,21 @@ use oci_client::{secrets::RegistryAuth, Client, Reference};
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::fs::{self, File};
-use tokio::io::AsyncWriteExt;
+use std::pin::Pin;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+use std::task::{Context as TaskContext, Poll};
+use std::time::{Duration, Instant};
+use tokio::fs;
+use tokio::io::{AsyncRead, ReadBuf};
 use tokio::sync::RwLock;
 use tokio::time::{sleep, timeout};
 use tokio_util::io::StreamReader;
 
 const LAYER_PULL_ATTEMPTS: usize = 3;
 const LAYER_STREAM_TIMEOUT_SECS: u64 = 60;
-const LAYER_COPY_TIMEOUT_SECS: u64 = 120;
 const LAYER_UNPACK_TIMEOUT_SECS: u64 = 180;
 /// The PullClient connects to remote OCI registry, pulls the container image,
 /// and save the image layers under the layer store and return the layer meta info.
@@ -123,6 +126,8 @@ impl<'a> PullClient<'a> {
         decrypt_config: &Option<&str>,
         meta_store: Arc<RwLock<MetaStore>>,
     ) -> Result<Vec<LayerMeta>> {
+        let start = Instant::now();
+        let layer_count = layer_descs.len();
         let meta_store = &meta_store;
         let layer_metas: Vec<(usize, LayerMeta)> = stream::iter(layer_descs)
             .enumerate()
@@ -142,6 +147,11 @@ impl<'a> PullClient<'a> {
             .await?;
         let meta_map: BTreeMap<usize, _> = layer_metas.into_iter().collect();
         let sorted_layer_metas = meta_map.into_values().collect();
+        info!(
+            "image layers pull stage completed: layers={}, elapsed_ms={}",
+            layer_count,
+            start.elapsed().as_millis()
+        );
         Ok(sorted_layer_metas)
     }
 
@@ -213,6 +223,8 @@ impl<'a> PullClient<'a> {
             "image layer pull start: index={}, digest={}, size={}, media_type={}",
             index, digest, expected_size, media_type
         );
+        let total_start = Instant::now();
+        let stream_start = Instant::now();
         let layer_stream = timeout(
             Duration::from_secs(LAYER_STREAM_TIMEOUT_SECS),
             self.client.pull_blob_stream(&self.reference, &layer),
@@ -225,8 +237,15 @@ impl<'a> PullClient<'a> {
             )
         })?
         .map_err(|e| anyhow!("failed to async pull blob stream: {e:?}"))?;
+        info!(
+            "image layer stream opened: index={}, digest={}, elapsed_ms={}",
+            index,
+            digest,
+            stream_start.elapsed().as_millis()
+        );
 
         let layer_reader = StreamReader::new(layer_stream.stream);
+        let handle_start = Instant::now();
         let layer_meta = self
             .async_handle_layer(layer, diff_id, decrypt_config, layer_reader, meta_store)
             .await
@@ -237,8 +256,13 @@ impl<'a> PullClient<'a> {
                 )
             })?;
         info!(
-            "image layer pull complete: index={}, digest={}, store_path={}, uncompressed_digest={}",
-            index, digest, layer_meta.store_path, layer_meta.uncompressed_digest
+            "image layer pull complete: index={}, digest={}, store_path={}, uncompressed_digest={}, handle_ms={}, total_ms={}",
+            index,
+            digest,
+            layer_meta.store_path,
+            layer_meta.uncompressed_digest,
+            handle_start.elapsed().as_millis(),
+            total_start.elapsed().as_millis()
         );
 
         Ok(layer_meta)
@@ -249,7 +273,7 @@ impl<'a> PullClient<'a> {
         layer: OciDescriptor,
         diff_id: String,
         decrypt_config: &Option<&str>,
-        mut layer_reader: impl tokio::io::AsyncRead + Unpin + Send,
+        layer_reader: impl tokio::io::AsyncRead + Unpin + Send,
         ms: Arc<RwLock<MetaStore>>,
     ) -> Result<LayerMeta> {
         // if layer is already in /run/image-rs/layers,do not need to pull
@@ -258,7 +282,6 @@ impl<'a> PullClient<'a> {
         }
 
         let destination = self.layer_store.new_layer_store_path();
-        let compressed_path = PathBuf::from(format!("{}.compress", &destination.display()));
         let digest = layer.digest.clone();
         let expected_size = layer.size;
         let store_path = destination.display().to_string();
@@ -300,39 +323,23 @@ impl<'a> PullClient<'a> {
                     .await?;
                 layer_meta.encrypted = true;
             } else {
-                if let Some(parent) = &compressed_path.parent() {
-                    fs::create_dir_all(parent)
-                        .await
-                        .context("failed to create compressed layer parent directory")?;
-                }
+                let unpack_start = Instant::now();
                 info!(
-                    "saving compressed image layer: digest={}, path={}, expected_size={}",
+                    "streaming compressed image layer directly to unpack: digest={}, expected_size={}, destination={}",
                     digest,
-                    compressed_path.display(),
                     expected_size
+                    , destination.display()
                 );
-                let mut compressed_file = File::create(&compressed_path)
-                    .await
-                    .context("failed to create compressed layer file")?;
-
-                let copied = timeout(
-                    Duration::from_secs(LAYER_COPY_TIMEOUT_SECS),
-                    tokio::io::copy(&mut layer_reader, &mut compressed_file),
-                )
-                .await
-                .map_err(|_| {
-                    anyhow!(
-                        "timed out saving compressed layer after {}s",
-                        LAYER_COPY_TIMEOUT_SECS
+                let (layer_reader, compressed_bytes) = CountingReader::new(layer_reader);
+                layer_meta.uncompressed_digest = self
+                    .async_decompress_unpack_layer_with_timeout(
+                        layer_reader,
+                        &diff_id,
+                        &layer.media_type,
+                        &destination,
                     )
-                })?
-                .context("failed to save compressed layer")?;
-                compressed_file
-                    .flush()
-                    .await
-                    .context("failed to flush compressed layer file")?;
-                drop(compressed_file);
-
+                    .await?;
+                let copied = compressed_bytes.load(Ordering::Relaxed);
                 if expected_size > 0 && copied != expected_size as u64 {
                     bail!(
                         "compressed layer size mismatch for {}: expected={}, copied={}",
@@ -342,25 +349,12 @@ impl<'a> PullClient<'a> {
                     );
                 }
                 info!(
-                    "saved compressed image layer: digest={}, bytes={}, path={}",
+                    "streamed and unpacked image layer: digest={}, compressed_bytes={}, destination={}, elapsed_ms={}",
                     digest,
                     copied,
-                    compressed_path.display()
+                    destination.display(),
+                    unpack_start.elapsed().as_millis()
                 );
-
-                let layer_reader = File::open(&compressed_path)
-                    .await
-                    .context("failed to open compressed layer file for unpacking")?;
-                layer_meta.uncompressed_digest = self
-                    .async_decompress_unpack_layer_with_timeout(
-                        layer_reader,
-                        &diff_id,
-                        &layer.media_type,
-                        &destination,
-                    )
-                    .await?;
-
-                remove_file_if_exists(&compressed_path).await;
             }
 
             // uncompressed digest should equal to the diff_ids in image_config.
@@ -379,7 +373,7 @@ impl<'a> PullClient<'a> {
         match result {
             Ok(layer_meta) => Ok(layer_meta),
             Err(err) => {
-                cleanup_partial_layer(&destination, &compressed_path).await;
+                cleanup_partial_layer(&destination).await;
                 Err(err)
             }
         }
@@ -420,26 +414,51 @@ impl<'a> PullClient<'a> {
     }
 }
 
-async fn cleanup_partial_layer(destination: &Path, compressed_path: &Path) {
-    remove_file_if_exists(compressed_path).await;
+struct CountingReader<R> {
+    inner: R,
+    bytes: Arc<AtomicU64>,
+}
+
+impl<R> CountingReader<R> {
+    fn new(inner: R) -> (Self, Arc<AtomicU64>) {
+        let bytes = Arc::new(AtomicU64::new(0));
+        (
+            Self {
+                inner,
+                bytes: Arc::clone(&bytes),
+            },
+            bytes,
+        )
+    }
+}
+
+impl<R> AsyncRead for CountingReader<R>
+where
+    R: AsyncRead + Unpin,
+{
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let old_len = buf.filled().len();
+        let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &poll {
+            let new_len = buf.filled().len();
+            self.bytes
+                .fetch_add((new_len - old_len) as u64, Ordering::Relaxed);
+        }
+        poll
+    }
+}
+
+async fn cleanup_partial_layer(destination: &Path) {
     match fs::remove_dir_all(destination).await {
         Ok(()) => {}
         Err(err) if err.kind() == ErrorKind::NotFound => {}
         Err(err) => warn!(
             "failed to remove partial image layer directory {}: {:#}",
             destination.display(),
-            err
-        ),
-    }
-}
-
-async fn remove_file_if_exists(path: &Path) {
-    match fs::remove_file(path).await {
-        Ok(()) => {}
-        Err(err) if err.kind() == ErrorKind::NotFound => {}
-        Err(err) => warn!(
-            "failed to remove temporary file {}: {:#}",
-            path.display(),
             err
         ),
     }
@@ -452,9 +471,13 @@ mod tests {
     use crate::decoder::ERR_BAD_MEDIA_TYPE;
     use crate::ERR_BAD_UNCOMPRESSED_DIGEST;
     use flate2::write::GzEncoder;
+    use nix::unistd::{Gid, Uid};
     use oci_client::manifest::IMAGE_CONFIG_MEDIA_TYPE;
     use oci_spec::image::{ImageConfiguration, MediaType};
+    use sha2::Digest;
     use std::io::Write;
+    use std::path::PathBuf;
+    use tokio_tar::{Builder, Header};
 
     use test_utils::{assert_result, assert_retry};
 
@@ -712,6 +735,68 @@ mod tests {
 
             assert_result!(d.result, result, msg);
         }
+    }
+
+    #[tokio::test]
+    async fn streams_plain_layers_directly_to_unpack() {
+        let data = b"hello from streamed layer\n";
+        let mut archive = Builder::new(Vec::new());
+        let mut header = Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_uid(Uid::current().as_raw() as u64);
+        header.set_gid(Gid::current().as_raw() as u64);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "hello.txt", data.as_slice())
+            .await
+            .unwrap();
+        let tar_bytes = archive.into_inner().await.unwrap();
+        let diff_id = format!("sha256:{:x}", sha2::Sha256::digest(&tar_bytes));
+
+        let mut gzip_encoder = GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip_encoder.write_all(&tar_bytes).unwrap();
+        let gzip_layer = gzip_encoder.finish().unwrap();
+
+        let layer = OciDescriptor {
+            media_type: MediaType::ImageLayerGzip.to_string(),
+            digest: "sha256:test-layer".to_string(),
+            size: gzip_layer.len() as i64,
+            ..Default::default()
+        };
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let layer_store =
+            LayerStore::new(tempdir.path().to_path_buf()).expect("create layer store failed");
+        let image = Reference::try_from("example.com/test/image:latest").unwrap();
+        let client = PullClient::new(
+            image,
+            layer_store,
+            &RegistryAuth::Anonymous,
+            DEFAULT_MAX_CONCURRENT_DOWNLOAD,
+            None,
+            None,
+            vec![],
+        )
+        .unwrap();
+        let ms = Arc::new(RwLock::new(MetaStore::default()));
+
+        let layer_meta = client
+            .async_handle_layer(layer, diff_id.clone(), &None, gzip_layer.as_slice(), ms)
+            .await
+            .unwrap();
+
+        assert_eq!(layer_meta.uncompressed_digest, diff_id);
+        assert_eq!(layer_meta.compressed_digest, "sha256:test-layer");
+        let store_path = PathBuf::from(&layer_meta.store_path);
+        assert_eq!(
+            tokio::fs::read(store_path.join("hello.txt")).await.unwrap(),
+            data
+        );
+        assert!(
+            !PathBuf::from(format!("{}.compress", layer_meta.store_path)).exists(),
+            "streaming unpack path should not leave a compressed temp file"
+        );
     }
 
     #[cfg(feature = "nydus")]
