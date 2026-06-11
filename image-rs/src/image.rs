@@ -335,6 +335,7 @@ impl ImageClient {
             self.config.skip_proxy_ips.as_deref(),
             self.config.image_pull_proxy.as_deref(),
             self.config.extra_root_certificates.clone(),
+            self.config.insecure_registry_hosts.clone(),
         )?;
         let manifest_start = Instant::now();
         let (image_manifest, image_digest, image_config) = client.pull_manifest().await?;

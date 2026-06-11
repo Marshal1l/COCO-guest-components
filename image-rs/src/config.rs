@@ -114,6 +114,13 @@ pub struct ImageConfig {
     #[serde(default = "Vec::default")]
     pub extra_root_certificates: Vec<String>,
 
+    /// Registries that should be contacted over HTTP instead of HTTPS.
+    ///
+    /// This is used for local test registries reachable only from the CoCo
+    /// deployment network, for example `10.88.0.1:19000`.
+    #[serde(default = "Vec::default")]
+    pub insecure_registry_hosts: Vec<String>,
+
     /// Nydus services configuration
     #[serde(rename = "nydus")]
     pub nydus_config: Option<NydusConfig>,
@@ -169,6 +176,7 @@ impl Default for ImageConfig {
             image_pull_proxy: None,
             skip_proxy_ips: None,
             extra_root_certificates: Vec::new(),
+            insecure_registry_hosts: Vec::new(),
 
             #[cfg(feature = "keywrap-native")]
             kbc: default_kbc(),

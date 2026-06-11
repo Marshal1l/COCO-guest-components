@@ -11,7 +11,7 @@ use crate::stream::stream_processing;
 use anyhow::{anyhow, bail, Context, Result};
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use log::{info, warn};
-use oci_client::client::{Certificate, CertificateEncoding, ClientConfig};
+use oci_client::client::{Certificate, CertificateEncoding, ClientConfig, ClientProtocol};
 use oci_client::manifest::{OciDescriptor, OciImageManifest};
 use oci_client::{secrets::RegistryAuth, Client, Reference};
 use std::collections::BTreeMap;
@@ -63,8 +63,13 @@ impl<'a> PullClient<'a> {
         no_proxy: Option<&str>,
         https_proxy: Option<&str>,
         extra_root_certificates: Vec<String>,
+        insecure_registry_hosts: Vec<String>,
     ) -> Result<PullClient<'a>> {
         let mut client_config = ClientConfig::default();
+        if !insecure_registry_hosts.is_empty() {
+            client_config.protocol = ClientProtocol::HttpsExcept(insecure_registry_hosts);
+        }
+
         if let Some(no_proxy) = no_proxy {
             client_config.no_proxy = Some(no_proxy.to_string())
         }
